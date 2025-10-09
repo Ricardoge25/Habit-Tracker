@@ -1,9 +1,24 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, status
 from rest_framework.exceptions import PermissionDenied
-from .models import Habit, HabitRecord
-from .serializers import HabitSerializer, HabitRecordSerializer
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.utils import timezone
+from django.contrib.auth import get_user_model
+from .models import Habit, HabitRecord, CustomUser, Category
+from .serializers import HabitSerializer, HabitRecordSerializer, RegisterSerializer, CategorySerializer
 
 # Create your views here.
+
+class CategoryViewSet(viewsets.ModelViewSet):
+  serializer_class = CategorySerializer
+  permission_classes = [permissions.IsAuthenticated]
+
+  def get_queryset(self):
+    return Category.objects.filter(user=self.request.user)
+  
+  def perform_create(self, serializer):
+    serializer.save(user=self.request.user)
+
 class HabitViewSet(viewsets.ModelViewSet):
   """CRUD de hábitos del usuario autenticado."""
   queryset = Habit.objects.all()
@@ -20,6 +35,26 @@ class HabitViewSet(viewsets.ModelViewSet):
     # Forzar que el hábito pertenezca al usuario autenticado
     serializer.save(user=self.request.user)
 
+  # ⚙️ Acción personalizada para marcar como completado o no.
+  @action(detail=True, methods=["post"], url_path="toggle-completion")
+  def toggle_completion(self, request, pk=None):
+    habit = self.get_object()
+    date = request.data.get("date") or timezone.localdate()
+    completed = request.data.get("completed", True)
+    note = reques.data.get("note", "")
+
+    record, created = HabitRecord.objects.get_or_create(
+      habit=habit,
+      date=date,
+      defaults={"completed": completed, "note": note}
+    )
+    if not created:
+      record.completed = completed
+      record.note = note
+      record.save()
+
+    serializer = HabitRecordSerializer(record)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 class HabitRecordViewSet(viewsets.ModelViewSet):
   """CRUD de registros de hábitos."""
@@ -38,3 +73,10 @@ class HabitRecordViewSet(viewsets.ModelViewSet):
       raise PermissionDenied("No puedes registrar hábitos de otro usuario.")
     serializer.save()
     
+
+class RegisterViewSet(viewsets.ModelViewSet):
+  User = get_user_model()
+  queryset = CustomUser.objects.all()
+  permission_classes = [permissions.AllowAny]
+  serializer_class = RegisterSerializer
+

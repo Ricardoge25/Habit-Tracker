@@ -2,12 +2,20 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
+from django.contrib.auth.models import AbstractUser
 
-""" class Category(models.Model):
-  Categorias opcionales para agrupar hábitos
-  user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="habit_categories") #Relación con el usuario
+class CustomUser(AbstractUser):
+  """Modelo de usuario personalizado (si se necesitan campos extra en el futuro)"""
+  email = models.EmailField(unique=True, null=True, blank=True)
+
+  def __str__(self):
+    return self.username
+
+class Category(models.Model):
+  """ Categorias opcionales para agrupar hábitos """
+  user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="categories") #Relación con el usuario
   name = models.CharField(max_length=60) #Nombre de la categoría 
-  color = models.CharField(max_length=7, blank=True, null=True) # color hexadecimal
+  color = models.CharField(max_length=7, blank=True, null=True, default='#0003A3') # color hexadecimal
   created_at = models.DateTimeField(auto_now_add=True) #Campo para la fecha de creación
 
   class Meta:
@@ -16,7 +24,6 @@ from datetime import timedelta
 
   def __str__(self):
     return self.name # Devuelve el nombre 
-"""
 
 class Habit(models.Model):
   """Modelo principal para un hábito"""
@@ -37,7 +44,15 @@ class Habit(models.Model):
   name = models.CharField(max_length=150) # Nombre del hábito
   slug = models.SlugField(max_length=160, blank=True, null=True) #Para las URLS
   description = models.TextField(blank=True, null=True) #Descripción del hábito
-  # category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, related_name="habits") #Relación con la categoría 
+  #Relación con la categoría 
+  category = models.ForeignKey(
+    Category, 
+    on_delete=models.SET_NULL, 
+    null=True,
+    blank=True,
+    related_name="habits",
+    default=None,
+  )
   # Campo para la frecuencia
   frequency = models.CharField(
     max_length=10,
@@ -49,12 +64,12 @@ class Habit(models.Model):
     default=1,
     help_text="Cuántas veces debería completarse por periodo (ej: 1 vez al día)"
   ) 
-  #reminder_time = models.TimeField(blank=True, null=True) #Hora sugerida para recordatorio
-  #is_active = models.BooleanField(default=True) #Estado del hábito
-  #skip_allowed = models.PositiveSmallIntegerField(default=0,
-      #help_text="Días permitidos de salto por periodo (opcional, para no romper la racha)") #Campo para saltar o no el hábito
+  """ reminder_time = models.TimeField(blank=True, null=True) #Hora sugerida para recordatorio """
+  """ is_active = models.BooleanField(default=True) #Estado del hábito """
+  """ skip_allowed = models.PositiveSmallIntegerField(default=0,
+      help_text="Días permitidos de salto por periodo (opcional, para no romper la racha)") #Campo para saltar o no el hábito """
   created_at = models.DateTimeField(auto_now_add=True) #Fecha de creación
-  updated_at = models.DateTimeField(auto_now_add=True) #Fecha de modificación
+  updated_at = models.DateTimeField(auto_now=True) #Fecha de modificación
 
   class Meta:
     unique_together = ("user", "name") # Evita duplicados por usuario con el mismo nombre del hábito
@@ -139,7 +154,7 @@ class Habit(models.Model):
     
     #Calcula la racha más larga en el intervalo [start, end].
     #Si no se pasan fechas, revisa TODOS los registros.
-   
+  
     completed_qs = self.get_records_qs(start=start, end=end).filter(completed=True).values_list("date", flat=True)
     dates = sorted(list(completed_qs))
     longest = 0
@@ -212,3 +227,5 @@ class HabitRecord(models.Model):
   
   def __str__(self): # Devuelve el título de la meta
     return self.title """
+
+
