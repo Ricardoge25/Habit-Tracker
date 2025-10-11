@@ -14,8 +14,8 @@ class CustomUser(AbstractUser):
 class Category(models.Model):
   """ Categorias opcionales para agrupar hábitos """
   user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="categories") #Relación con el usuario
-  name = models.CharField(max_length=60) #Nombre de la categoría 
-  color = models.CharField(max_length=7, blank=True, null=True, default='#0003A3') # color hexadecimal
+  name = models.CharField(max_length=60, default="General") #Nombre de la categoría 
+  color = models.CharField(max_length=7, blank=True, null=True, default='#4951E4') # color hexadecimal
   created_at = models.DateTimeField(auto_now_add=True) #Campo para la fecha de creación
 
   class Meta:
@@ -51,7 +51,6 @@ class Habit(models.Model):
     null=True,
     blank=True,
     related_name="habits",
-    default=None,
   )
   # Campo para la frecuencia
   frequency = models.CharField(
@@ -62,7 +61,8 @@ class Habit(models.Model):
   # Objetivo por periodo
   target_per_period = models.PositiveSmallIntegerField(
     default=1,
-    help_text="Cuántas veces debería completarse por periodo (ej: 1 vez al día)"
+    help_text="Cuántas veces debería completarse por periodo (ej: 1 vez al día)", 
+    null=True
   ) 
   """ reminder_time = models.TimeField(blank=True, null=True) #Hora sugerida para recordatorio """
   """ is_active = models.BooleanField(default=True) #Estado del hábito """

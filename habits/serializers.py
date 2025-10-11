@@ -19,6 +19,7 @@ class HabitSerializer(serializers.ModelSerializer):
     source="category",
     queryset=Category.objects.none(),
     write_only=True,
+    allow_null=True,
     required=False
   )
   records = HabitRecordSerializer(many=True, read_only=True)
@@ -30,6 +31,7 @@ class HabitSerializer(serializers.ModelSerializer):
       "target_per_period", "category", "category_id",
       "created_at", "records"
     ]
+    extra_kwargs = {'category': {'allow_null': True, 'required': False}}
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)

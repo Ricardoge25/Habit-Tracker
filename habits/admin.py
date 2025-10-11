@@ -8,17 +8,25 @@ admin.site.index_title = "Welcome to the HabitTracker Admin"
 
 @admin.register(Habit)
 class HabitAdmin(admin.ModelAdmin):
-    list_display = ("name", "user", "category", "frequency", "created_at")
-    list_filter = ("user",) 
-    search_fields = ("name", "user__username")
-
+    list_display = ('name', 'user', 'category', 'frequency', 'created_at')
+    list_filter = ('user', 'category', 'frequency')
+    search_fields = ('name', 'description')
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        # Si el campo es 'category', mostramos todas las categorías
-        # porque el admin (tú) puede crear hábitos para cualquier usuario.
         if db_field.name == "category":
-            kwargs["queryset"] = Category.objects.all()
+            # Caso 1: si estamos editando un hábito existente
+            if hasattr(request, '_obj_') and request._obj_ is not None and request._obj_.user:
+                kwargs["queryset"] = Category.objects.filter(user=request._obj_.user)
+            # Caso 2: si estamos creando un nuevo hábito, filtramos por el usuario logueado
+            else:
+                kwargs["queryset"] = Category.objects.filter(user=request.user)
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def get_form(self, request, obj=None, **kwargs):
+        request._obj_ = obj  # Guardamos el objeto actual (o None si es nuevo)
+        return super().get_form(request, obj, **kwargs)
+    
+
 admin.site.register(HabitRecord)
 admin.site.register(CustomUser)
 @admin.register(Category)
