@@ -3,6 +3,7 @@ from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
 from django.contrib.auth.models import AbstractUser
+from django.core.exceptions import ValidationError
 
 class CustomUser(AbstractUser):
   """Modelo de usuario personalizado (si se necesitan campos extra en el futuro)"""
@@ -21,6 +22,7 @@ class Category(models.Model):
   class Meta:
     unique_together = ("user", "name") # Evita que un mismo usuario cree dos categorías con el mismo nombre
     ordering = ["name"] #Ordenamiento alfabéticamente
+    verbose_name = "Categoría"
 
   def __str__(self):
     return self.name # Devuelve el nombre 
@@ -77,6 +79,7 @@ class Habit(models.Model):
       models.Index(fields=["user", "name"]), # Para búsquedas
     ]"""
     ordering = ["-created_at"]
+    verbose_name = "Hábito"
 
   def __str__(self):
     return f"{self.name} ({self.user})"
@@ -182,17 +185,18 @@ class HabitRecord(models.Model):
   date = models.DateField() #Fecha
   completed = models.BooleanField(default=False) # Completado o no
   note = models.TextField(blank=True, null=True) # Nota o comentario
-  created_at = models.DateTimeField(auto_now_add=True) # Fecha de creación
+  progress = models.PositiveIntegerField(default=0) 
+  user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,null=True, blank=True,)
 
   class Meta:
     unique_together = ("habit", "date") # Evita duplicados para el mismo día
-    ordering = ["-date"] # Ordenamiento por fechas
-    indexes = [
-      models.Index(fields=["habit", "date"]), # Optimiza consultas por rangos de fecha
-    ]
 
-  def __str__(self): # Devuelve un String con nombre del hábito, fecha y check
-    return f"{self.habit.name} - {self.date} - {'✅' if self.completed else '❌'}" 
+  def __str__(self):
+    return f"{self.habit.name} - {self.date} - {'Completado' if self.completed else 'Pendiente'}"
+  
+  def clean(self):
+    if self.progress > self.habit.target_per_period:
+      raise ValidationError("El progreso no puede superar la meta del hábito.")
   
 
 # DEFINIR METAS ASOCIADAS A UN HÁBITO

@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets, permissions, status, generics
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,6 +9,10 @@ from .serializers import HabitSerializer, HabitRecordSerializer, RegisterSeriali
 
 # Create your views here.
 
+
+#--------------------------------------------------------
+# 📁 Categoría
+#--------------------------------------------------------
 class CategoryViewSet(viewsets.ModelViewSet):
   serializer_class = CategorySerializer
   permission_classes = [permissions.IsAuthenticated]
@@ -19,18 +23,20 @@ class CategoryViewSet(viewsets.ModelViewSet):
   def perform_create(self, serializer):
     serializer.save(user=self.request.user)
 
+#--------------------------------------------------------
+# 💡 Hábitos
+#--------------------------------------------------------
 class HabitViewSet(viewsets.ModelViewSet):
   """CRUD de hábitos del usuario autenticado."""
-  queryset = Habit.objects.all()
   serializer_class = HabitSerializer
   permission_classes = [permissions.IsAuthenticated]
 
-  # Devuelve los hábitos del usuario autenticado
+  """ Devuelve los hábitos del usuario autenticado"""
   def get_queryset(self):
     #Cada usuario ve solo sus hábitos 
     return Habit.objects.filter(user=self.request.user)
   
-  # El hábito se crea asociado al usuario autenticado
+  """El hábito se crea asociado al usuario autenticado"""
   def perform_create(self, serializer):
     # Forzar que el hábito pertenezca al usuario autenticado
     serializer.save(user=self.request.user)
@@ -39,15 +45,23 @@ class HabitViewSet(viewsets.ModelViewSet):
   @action(detail=True, methods=["post"], url_path="toggle-completion")
   def toggle_completion(self, request, pk=None):
     habit = self.get_object()
+
+    # Fecha (por defecto: hoy)
     date = request.data.get("date") or timezone.localdate()
     completed = request.data.get("completed", True)
-    note = reques.data.get("note", "")
+    note = request.data.get("note", "")
 
     record, created = HabitRecord.objects.get_or_create(
       habit=habit,
       date=date,
-      defaults={"completed": completed, "note": note}
+      defaults={
+        "completed": completed,
+        "note": note,
+        "user": request.user,
+      },
     )
+    
+    # Si ya existía, actualizamos su estado 
     if not created:
       record.completed = completed
       record.note = note
@@ -55,7 +69,10 @@ class HabitViewSet(viewsets.ModelViewSet):
 
     serializer = HabitRecordSerializer(record)
     return Response(serializer.data, status=status.HTTP_200_OK)
-
+  
+#--------------------------------------------------------
+# ⏱️ Registros de hábitos
+#--------------------------------------------------------
 class HabitRecordViewSet(viewsets.ModelViewSet):
   """CRUD de registros de hábitos."""
   serializer_class = HabitRecordSerializer
@@ -66,14 +83,19 @@ class HabitRecordViewSet(viewsets.ModelViewSet):
     return HabitRecord.objects.filter(habit__user=self.request.user)
   
   # Verifica que el hábito pertenezca al usuario autenticado
-  def perform_crate(self, serializer):
-    habit = serializer.validated_data("habit")
+  def perform_create(self, serializer):
+    habit = serializer.validated_data.get("habit")
+
     # Previene que un usuario cree records en hábitos de otro user 
     if habit.user != self.request.user:
       raise PermissionDenied("No puedes registrar hábitos de otro usuario.")
-    serializer.save()
+    
+    serializer.save(user=self.request.user)
     
 
+#--------------------------------------------------------
+# 👤 Registro de usuarios
+#--------------------------------------------------------
 class RegisterViewSet(viewsets.ModelViewSet):
   User = get_user_model()
   queryset = CustomUser.objects.all()

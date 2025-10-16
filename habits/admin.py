@@ -8,7 +8,7 @@ admin.site.index_title = "Welcome to the HabitTracker Admin"
 
 @admin.register(Habit)
 class HabitAdmin(admin.ModelAdmin):
-    list_display = ('name', 'user', 'category', 'frequency', 'created_at')
+    list_display = ('name', 'user', 'category', 'created_at')
     list_filter = ('user', 'category', 'frequency')
     search_fields = ('name', 'description')
 
