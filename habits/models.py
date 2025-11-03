@@ -197,6 +197,7 @@ class HabitRecord(models.Model):
     related_name="records") 
   date = models.DateTimeField(default=timezone.now) #Fecha
   completed = models.BooleanField(default=False) # Completado o no
+  completed_at = models.DateTimeField(null=True, blank=True) 
   note = models.TextField(blank=True, null=True) # Nota o comentario
   progress = models.PositiveIntegerField(default=1) 
   user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,null=True, blank=True,)

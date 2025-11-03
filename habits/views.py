@@ -50,16 +50,16 @@ class HabitViewSet(viewsets.ModelViewSet):
     today = timezone.localdate()
     note = request.data.get("note", "")
 
-    # Aseguramos que haya un registro único por día
+    # Garantiza un registro único por día
     record = HabitRecord.objects.filter(
-      habit=habit, user=request.user, date__date=today
+      habit=habit, user=user, date__date=today
     ).first()
 
     if not record:
       record = HabitRecord.objects.create(
         habit=habit,
-        user=request.user,
-        date=timezone.make_aware(datetime.combine(today, time(0, 0))),
+        user=user,
+        date=timezone.make_awareaware(datetime.combine(today, time(0, 0))),
         completed=False,
       )
 
@@ -67,6 +67,8 @@ class HabitViewSet(viewsets.ModelViewSet):
     completed = request.data.get("completed", None)
     if completed is not None:
       record.completed = bool(completed)
+      # Si se marca como completado, guarda la hroa actual. Si se desmarca la borra
+      record.completed_at = timezone.now() if record.completed else None
 
     if note is not None:
       record.note = note
@@ -74,7 +76,8 @@ class HabitViewSet(viewsets.ModelViewSet):
     record.save()
 
     serializer = HabitRecordSerializer(record)
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response(serializer.data, status=status.HTTP_200_OK  )
+    
 
   @action(detail=False, methods=["get"], url_path="today")
   def today(self, request):

@@ -29,7 +29,7 @@ class HabitAdmin(admin.ModelAdmin):
 
 @admin.register(HabitRecord)
 class HabitRecordAdmin(admin.ModelAdmin):
-    list_display = ("habit", "date", "completed", "user")
+    list_display = ('habit', 'date', 'completed', 'completed_at') 
     list_filter = ("completed", "date", "user")
     search_fields = ("habit__name", "user__username")
     ordering = ("-date",)
