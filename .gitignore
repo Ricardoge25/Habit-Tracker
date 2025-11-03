@@ -1,0 +1,31 @@
+# Entornos virtuales
+venv/
+.env/
+.venv/
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+
+# Archivos de configuración locales
+*.env
+*.log
+
+# Archivos de compilación
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Carpetas de VS Code y sistema
+.vscode/
+.idea/
+.DS_Store
+
+# Archivos de Docker
+*.pid
+*.sock
+

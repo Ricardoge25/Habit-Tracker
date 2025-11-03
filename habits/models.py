@@ -96,13 +96,26 @@ class Habit(models.Model):
     record, created = HabitRecord.objects.get_or_create(
       habit=self,
       date=when,
-      defaults={"completed": bool(completed), "note": note or ""}
+      defaults={"completed": bool(completed), "note": note or "", "user": self.user}
     )
     if not created:
       record.completed = bool(completed)
       if note is not None:
         record.note = note
       record.save()
+
+    # ---------- SISTEMA DE EXPERIENCIA ----------
+    if completed:
+      xp_gain = 10 # XP base por hábito completado
+
+      # Progreso específico del hábito (opcional)
+      progress_habit, _ = Progress.objects.get_or_create(user=self.user, habit=self)
+      progress_habit.add_experience(xp_gain)
+
+      # Progreso global
+      progress_global, _ = Progress.objects.get_or_create(user=self.user, habit=None)
+      progress_global.add_experience(xp_gain)
+
     return record
   
 
@@ -182,17 +195,19 @@ class HabitRecord(models.Model):
     Habit, 
     on_delete=models.CASCADE, 
     related_name="records") 
-  date = models.DateField() #Fecha
+  date = models.DateTimeField(default=timezone.now) #Fecha
   completed = models.BooleanField(default=False) # Completado o no
   note = models.TextField(blank=True, null=True) # Nota o comentario
-  progress = models.PositiveIntegerField(default=0) 
+  progress = models.PositiveIntegerField(default=1) 
   user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,null=True, blank=True,)
 
   class Meta:
-    unique_together = ("habit", "date") # Evita duplicados para el mismo día
+    constraints = [
+      models.UniqueConstraint(fields=['habit', 'date', 'user'], name='unique_habit_per_day')
+    ]
 
   def __str__(self):
-    return f"{self.habit.name} - {self.date} - {'Completado' if self.completed else 'Pendiente'}"
+    return f"{self.habit.name} - {self.date} - {'Completado' if self.completed else 'Pendiente'} - {self.user}"
   
   def clean(self):
     if self.progress > self.habit.target_per_period:
@@ -209,7 +224,7 @@ class HabitRecord(models.Model):
   start_date = models.DateField() # Fecha de inicio
   end_date = models.DateField() # Fecha de terminación
   target_percent = models.PositiveSmallIntegerField(default=75) # ej: 75%
-  achieved = models.BooleanField(default=False) # ¿Conseguido?
+  achieved = models.BooleanField(default=False) # ¿Conseguido?Ñ
   created_at = models.DateTimeField(auto_now_add=True) # Fecha de creación
 
   # Calcula el porcentaje real de cumplimiento de un hábito en el rango entre start_date y end_date
@@ -232,4 +247,44 @@ class HabitRecord(models.Model):
   def __str__(self): # Devuelve el título de la meta
     return self.title """
 
+class Progress(models.Model):
+  """Sistema de progreso del usuario
+    Puede representar el progreso global o el de un hábito en particular
+  """
+  user = models.ForeignKey(
+    settings.AUTH_USER_MODEL,
+    on_delete=models.CASCADE,
+    related_name="progress"
+  )
+  habit = models.ForeignKey(
+    Habit,
+    on_delete=models.CASCADE,
+    null=True,
+    blank=True,
+    related_name="progress"
+  )
+  level = models.PositiveIntegerField(default=1)
+  experience = models.PositiveIntegerField(default=0)
 
+  def xp_to_next_level(self):
+    # Fórmula cuadrática: se va volviendo más difícil con cada nivel que pasa
+    return (self.level * 100) + (self.level ** 2 * 10)
+  
+  def add_experience(self, amount):
+    """Suma experiencia y sube de nivel automáticamente si corresponde."""
+    self.experience += amount
+    
+    while self.experience >= self.xp_to_next_level():
+      self.level += 1
+      self.experience -= self.xp_to_next_level()
+    self.save()
+
+  def __str__(self):
+    if self.habit:
+      return f"{self.user.username} - {self.habit.name}"
+    return f"{self.user.username} (Global)"
+  
+  class Meta:
+    verbose_name = "Progreso"
+    verbose_name_plural = "Progresos"
+    unique_together = ("user", "habit") # Un progreso por hábito o uno global

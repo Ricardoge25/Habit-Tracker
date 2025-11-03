@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Habit, HabitRecord, CustomUser, Category
+from .models import Habit, HabitRecord, CustomUser, Category, Progress
 from django.utils import timezone
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -46,6 +46,29 @@ class HabitRecordSerializer(serializers.ModelSerializer):
         raise serializers.ValidationError("El progreso no puede superar la meta del hábito")
       
     return value
+  
+  def update(self, instance, validated_data):
+    """
+    Cuando un hábito se marca como completado, actualiza la experiencia global del usuario.
+    """
+    user = self.context["request"].user
+    completed_before = instance.completed # estado anterior
+    instance = super().update(instance, validated_data)
+
+    # Si el usuario lo acaba de completar (de False a True)
+    if not completed_before and instance.completed:
+      from .models import Progress
+
+      # progreso global (habit=None)
+      global_progress, _ = Progress.objects.get_or_create(user=user, habit=None)
+      global_progress.add_experience(25) # XP global
+
+      # progreso independiente de cada hábito
+      habit_progress, _ = Progress.objects.get_or_create(user=user, habit=instance.habit)
+      habit_progress.add_experience(10) # XP por hábito 
+
+    return instance
+
 
 class HabitSerializer(serializers.ModelSerializer):
   category = CategorySerializer(read_only=True)
@@ -56,14 +79,14 @@ class HabitSerializer(serializers.ModelSerializer):
     allow_null=True,
     required=False
   )
-  records = HabitRecordSerializer(many=True, read_only=True)
+  completed_today = serializers.SerializerMethodField()
 
   class Meta:
     model = Habit
     fields = [
       "id", "name", "description", "frequency",
       "target_per_period", "category", "category_id",
-      "created_at", "records"
+      "created_at", "completed_today",
     ]
     extra_kwargs = {'category': {'allow_null': True, 'required': False}}
 
@@ -74,10 +97,10 @@ class HabitSerializer(serializers.ModelSerializer):
       self.fields["category_id"].queryset = Category.objects.filter(user=request.user)
 
   def get_completed_today(self, obj):
+    """Devuelve si el hábito está completado hoy."""
     today = timezone.localdate()
     return obj.records.filter(date=today, completed=True).exists()
 
-  
 class RegisterSerializer(serializers.ModelSerializer):
   class Meta:
     model = CustomUser
@@ -88,5 +111,15 @@ class RegisterSerializer(serializers.ModelSerializer):
   def create(self, validated_data):
     user = CustomUser.objects.create_user(**validated_data)
     return user
+  
+class ProgressSerializer(serializers.ModelSerializer):
+  xp_to_next = serializers.SerializerMethodField()
 
+  class Meta:
+    model = Progress
+    fields = ['id', 'user', 'habit', 'level', 'experience', 'xp_to_next']
 
+  def get_xp_to_next(self, obj):
+    # ejemplo: cada nivel requiere 100 XP adicionales al anterior
+    base_xp = 100
+    return base_xp * obj.level

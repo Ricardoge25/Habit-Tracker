@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Habit, HabitRecord, CustomUser, Category
+from .models import Habit, HabitRecord, CustomUser, Category, Progress
 
 # Register your models here.
 admin.site.site_header = "HabitTracker Admin"
@@ -27,7 +27,14 @@ class HabitAdmin(admin.ModelAdmin):
         return super().get_form(request, obj, **kwargs)
     
 
-admin.site.register(HabitRecord)
+@admin.register(HabitRecord)
+class HabitRecordAdmin(admin.ModelAdmin):
+    list_display = ("habit", "date", "completed", "user")
+    list_filter = ("completed", "date", "user")
+    search_fields = ("habit__name", "user__username")
+    ordering = ("-date",)
+
+
 admin.site.register(CustomUser)
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
@@ -35,5 +42,6 @@ class CategoryAdmin(admin.ModelAdmin):
     list_filter = ("user",)                   # permite filtrar por usuario en el lateral
     search_fields = ("name", "user__username") # agrega búsqueda por nombre o usuario
 
+admin.site.register(Progress)
 
 #admin.site.register(Goal)
