@@ -63,28 +63,54 @@ class HabitViewSet(viewsets.ModelViewSet):
         completed=False,
       )
 
-    # Actualiza el estado de completado según lo enviado desde el cliente
+    # Guardar el estado anterior para detectar cambios reales
+    was_completed = record.completed
+
+    # Actualizar estado
     completed = request.data.get("completed", None)
     if completed is not None:
       record.completed = bool(completed)
-      # Si se marca como completado, guarda la hroa actual. Si se desmarca la borra
-      record.completed_at = timezone.now() if record.completed else None
-
     if note is not None:
       record.note = note
 
+    from .models import Progress
+    from .serializers import ProgressSerializer
+
+    global_progress, _= Progress.objects.get_or_create(user=user, habit=None)
+    habit_progress, _= Progress.objects.get_or_create(user=user, habit=habit)
+
+    # Si se marca como completado -  Detectar cambio de estado
+    if record.completed and not was_completed:
+      # Solo sumar si no estaba completado antes - Cambió de no completado a completado -> Sumar XP
+        record.completed_at = timezone.now()
+        global_progress.add_experience(20) # XP Global
+        habit_progress.add_experience(25) # XP del hábito
+    elif not record.completed and was_completed:
+      # Cambió de completado a NO completado -> Restar XP (mínimo 0)
+      record.completed_at = None # Limpiamos la hora de completado si se desmarca
+      global_progress.remove_experience(20)
+      habit_progress.remove_experience(25)
+
     record.save()
 
-    serializer = HabitRecordSerializer(record)
-    return Response(serializer.data, status=status.HTTP_200_OK  )
-    
+    record_serializer = HabitRecordSerializer(record)
+    habit_progress_serializer = ProgressSerializer(habit_progress)
+    global_progress_serializer = ProgressSerializer(global_progress)
 
+    return Response({
+      "record": record_serializer.data,
+      "habit_progress": habit_progress_serializer.data,
+      "global_progress": global_progress_serializer.data,
+    }, status=status.HTTP_200_OK)
+    
   @action(detail=False, methods=["get"], url_path="today")
   def today(self, request):
     """
     Devuelve los hábitos del usuario con su registro diario.
     Si no existe, lo crea una sola vez por día (sin duplicar).
     """
+    from .serializers import ProgressSerializer
+
     today = timezone.localdate()
     habits = Habit.objects.filter(user=request.user)
 
@@ -106,6 +132,10 @@ class HabitViewSet(viewsets.ModelViewSet):
       record = HabitRecord.objects.filter(
         habit=habit, user=request.user, date__date=today
       ).first()
+
+      # Buscamos el progreso del hábito
+      progress = Progress.objects.filter(user=request.user, habit=habit).first()
+      progress_data = ProgressSerializer(progress).data if progress else None
       data.append({
         "id": habit.id,
         "name": habit.name,
@@ -116,6 +146,7 @@ class HabitViewSet(viewsets.ModelViewSet):
           "name": habit.category.name if habit.category else None,
           "color": habit.category.color if habit.category else None,
         },
+        "progress": progress_data
       })
 
     return Response(data)
@@ -141,9 +172,6 @@ class HabitRecordViewSet(viewsets.ModelViewSet):
       raise PermissionDenied("No puedes registrar hábitos de otro usuario.")
     
     serializer.save(user=self.request.user)
-
-    
-    
 
 #--------------------------------------------------------
 # 👤 Registro de usuarios
@@ -212,7 +240,7 @@ class ProgressViewSet(viewsets.ModelViewSet):
     Devuelve o crea el progreso asociado a un hábito del usuario autenticado.
     """
     try:
-      progress, created = Progress.objects.get_or_creted(user=request.user, habit_id=pk)
+      progress, created = Progress.objects.get_or_create(user=request.user, habit_id=pk)
       serializer = self.get_serializer(progress)
       return Response(serializer.data)
     except Exception as e:

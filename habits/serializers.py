@@ -47,10 +47,10 @@ class HabitRecordSerializer(serializers.ModelSerializer):
       
     return value
   
-  def update(self, instance, validated_data):
-    """
-    Cuando un hábito se marca como completado, actualiza la experiencia global del usuario.
-    """
+  """ def update(self, instance, validated_data):
+  
+    #Cuando un hábito se marca como completado, actualiza la experiencia global del usuario.
+
     user = self.context["request"].user
     completed_before = instance.completed # estado anterior
     instance = super().update(instance, validated_data)
@@ -67,7 +67,7 @@ class HabitRecordSerializer(serializers.ModelSerializer):
       habit_progress, _ = Progress.objects.get_or_create(user=user, habit=instance.habit)
       habit_progress.add_experience(10) # XP por hábito 
 
-    return instance
+    return instance """
 
 
 class HabitSerializer(serializers.ModelSerializer):
@@ -80,13 +80,14 @@ class HabitSerializer(serializers.ModelSerializer):
     required=False
   )
   completed_today = serializers.SerializerMethodField()
-
+  progress = serializers.SerializerMethodField()
+  
   class Meta:
     model = Habit
     fields = [
       "id", "name", "description", "frequency",
       "target_per_period", "category", "category_id",
-      "created_at", "completed_today",
+      "created_at", "completed_today", 'progress'
     ]
     extra_kwargs = {'category': {'allow_null': True, 'required': False}}
 
@@ -100,6 +101,14 @@ class HabitSerializer(serializers.ModelSerializer):
     """Devuelve si el hábito está completado hoy."""
     today = timezone.localdate()
     return obj.records.filter(date=today, completed=True).exists()
+  
+  def get_progress(self, obj):
+    user = self.context['request'].user
+    progress = Progress.objects.filter(user=user, habit=obj).first()
+    if progress:
+      return ProgressSerializer(progress).data 
+    return None
+
 
 class RegisterSerializer(serializers.ModelSerializer):
   class Meta:
@@ -117,7 +126,7 @@ class ProgressSerializer(serializers.ModelSerializer):
 
   class Meta:
     model = Progress
-    fields = ['id', 'user', 'habit', 'level', 'experience', 'xp_to_next']
+    fields = ['user', 'habit', 'level', 'experience', 'xp_to_next']
 
   def get_xp_to_next(self, obj):
     # ejemplo: cada nivel requiere 100 XP adicionales al anterior

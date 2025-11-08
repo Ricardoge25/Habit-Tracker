@@ -266,19 +266,28 @@ class Progress(models.Model):
   )
   level = models.PositiveIntegerField(default=1)
   experience = models.PositiveIntegerField(default=0)
+  created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+  updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
   def xp_to_next_level(self):
     # Fórmula cuadrática: se va volviendo más difícil con cada nivel que pasa
-    return (self.level * 100) + (self.level ** 2 * 10)
+    return (self.level * 100)
   
   def add_experience(self, amount):
     """Suma experiencia y sube de nivel automáticamente si corresponde."""
     self.experience += amount
     
     while self.experience >= self.xp_to_next_level():
-      self.level += 1
       self.experience -= self.xp_to_next_level()
+      self.level += 1
     self.save()
+
+  def remove_experience(self, amount):
+    """Resta experiencia sin bajar de nivel. Mínimo 0 XP en el nivel actual."""
+    self.experience = max(0, self.experience - amount)
+    self.save()
+
+    # Mientras la experiencia sea negativa y no estemos en nivel 
 
   def __str__(self):
     if self.habit:
