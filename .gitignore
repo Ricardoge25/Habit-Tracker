@@ -11,7 +11,7 @@ __pycache__/
 *.sqlite3
 
 # Archivos de configuración locales
-*.env
+*.env*
 *.log
 
 # Archivos de compilación

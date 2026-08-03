@@ -59,7 +59,7 @@ class HabitViewSet(viewsets.ModelViewSet):
       record = HabitRecord.objects.create(
         habit=habit,
         user=user,
-        date=timezone.make_awareaware(datetime.combine(today, time(0, 0))),
+        date=timezone.make_aware (datetime.combine(today, time(0, 0))),
         completed=False,
       )
 
@@ -101,6 +101,7 @@ class HabitViewSet(viewsets.ModelViewSet):
       "record": record_serializer.data,
       "habit_progress": habit_progress_serializer.data,
       "global_progress": global_progress_serializer.data,
+      "current_streak": habit.current_streak(), 
     }, status=status.HTTP_200_OK)
     
   @action(detail=False, methods=["get"], url_path="today")
@@ -141,6 +142,7 @@ class HabitViewSet(viewsets.ModelViewSet):
         "name": habit.name,
         "description": habit.description,
         "completed_today": record.completed if record else False,
+        "current_streak": habit.current_streak(),
         "category": {
           "id": habit.category.id if habit.category else None,
           "name": habit.category.name if habit.category else None,
@@ -231,7 +233,10 @@ class ProgressViewSet(viewsets.ModelViewSet):
     """
     progress, created = Progress.objects.get_or_create(user=request.user, habit=None)
     serializer = self.get_serializer(progress)
-    return Response(serializer.data)
+    data = serializer.data
+    data['current_streak'] = request.user.current_streak()
+    data['monthly'] = request.user.monthly_completion_rate()
+    return Response(data)
   
   @action(detail=True, methods=['get'], url_path='habit-progress')
   def habit_progress(self, request, pk=None):

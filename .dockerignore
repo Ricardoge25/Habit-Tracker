@@ -1,0 +1,8 @@
+.env
+.env.local
+.env.aws
+.env.prod
+__pycache__
+*.pyc
+venv/
+db.sqlite3

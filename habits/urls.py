@@ -6,7 +6,7 @@ router = DefaultRouter()
 
 router.register('habits', HabitViewSet, "habit")
 router.register('habit-record', HabitRecordViewSet, "habitrecord")
-router.register('users', RegisterViewSet, "register")
+router.register('register', RegisterViewSet, "register")
 router.register('categories', CategoryViewSet, "category")
 router.register('progress', ProgressViewSet, "progress")
 

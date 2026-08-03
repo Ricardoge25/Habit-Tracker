@@ -4,6 +4,7 @@ from django.utils import timezone
 from datetime import timedelta
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
+from django.db.models.functions import TruncDate
 
 class CustomUser(AbstractUser):
   """Modelo de usuario personalizado (si se necesitan campos extra en el futuro)"""
@@ -11,6 +12,47 @@ class CustomUser(AbstractUser):
 
   def __str__(self):
     return self.username
+
+  def current_streak(self, upto=None):
+    """Racha global: días consecutivos con al menos un hábito completado."""
+    if upto is None:
+      upto = timezone.localdate()
+
+    completed_days = set(
+      self.habitrecord_set.filter(completed=True, date__date__lte=upto)
+      .annotate(day=TruncDate("date"))
+      .values_list("day", flat=True)
+    )
+
+    streak = 0
+    d = upto
+    while d in completed_days:
+      streak += 1
+      d = d - timedelta(days=1)
+
+    return streak
+
+  def monthly_completion_rate(self, upto=None):
+    """% de días al mes (hasta hoy) con al menos un hábito completado."""
+    if upto is None:
+      upto = timezone.localdate()
+
+    start = upto.replace(day=1)
+    days_elapsed = (upto - start).days + 1
+
+    completed_days = set(
+      self.habitrecord_set.filter(completed=True, date__date__range=(start, upto))
+      .annotate(day=TruncDate("date"))
+      .values_list("day", flat=True)
+    )
+
+    percentage = round((len(completed_days) / days_elapsed) * 100, 2) if days_elapsed else 0.0
+
+    return {
+      "percentage": percentage,
+      "completed_days": len(completed_days),
+      "days_elapsed": days_elapsed,
+    }
 
 class Category(models.Model):
   """ Categorias opcionales para agrupar hábitos """
@@ -151,20 +193,22 @@ class Habit(models.Model):
   
 
   def current_streak(self, upto=None):
-    """Cuenta de días consecutivos completados hasta 'upto'."""
     if upto is None:
       upto = timezone.localdate()
+
     completed = set(
-      self.records.filter(completed=True, date__lte=upto)
-      .values_list("date", flat=True)
+      self.records.filter(completed=True, date__date__lte=upto)
+      .annotate(day=TruncDate("date"))
+      .values_list("day", flat=True)
     )
+  
     streak = 0
     d = upto
     while d in completed:
       streak += 1
       d = d - timedelta(days=1)
+
     return streak
-  
 
   """ def longest_streak(self, start=None, end=None):
     
