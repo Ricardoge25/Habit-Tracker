@@ -159,7 +159,30 @@ class Habit(models.Model):
       progress_global.add_experience(xp_gain)
 
     return record
-  
+
+  # Historial semanal
+  def week_history(self, upto=None):
+    """
+    FEATURE: Historial semanal de puntitos.
+    Devuelve una lista de 7 booleanos (últimos 7 días, terminando domingo)
+    indicando si el hábito fue completado ese día
+    """
+    if upto is None:
+      upto = timezone.localdate()
+    start = upto - timedelta(days=6)
+
+    completed_days = set(
+      self.records.filter(completed=True, date__date__range=(start, upto))
+      .annotate(day=TruncDate("date"))
+      .values_list("day", flat=True)
+    )
+
+    history = []
+    d = start
+    while d <= upto:
+      history.append(d in completed_days)
+      d += timedelta(days=1)
+    return history
 
   """# Devuelve un QuerySet filtrado de registros en un rango de fechas
   def get_records_qs(self, start=None, end=None):
@@ -243,7 +266,7 @@ class HabitRecord(models.Model):
   completed = models.BooleanField(default=False) # Completado o no
   completed_at = models.DateTimeField(null=True, blank=True) 
   note = models.TextField(blank=True, null=True) # Nota o comentario
-  progress = models.PositiveIntegerField(default=1) 
+  progress = models.PositiveIntegerField(default=0) 
   user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,null=True, blank=True,)
 
   class Meta:
