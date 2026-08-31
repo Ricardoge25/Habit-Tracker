@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
 from datetime import datetime, time
+from django.db import transaction
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from .models import Habit, HabitRecord, CustomUser, Category, Progress
@@ -50,7 +51,67 @@ class HabitViewSet(viewsets.ModelViewSet):
     today = timezone.localdate()
     note = request.data.get("note", "")
 
-    # Garantiza un registro único por día
+    with transaction.atomic():
+      # select_for_update() bloquea esta fila hasta que termine la transacción,
+      # así ninguna petición concurrente puede leerla "a medias"
+      record = HabitRecord.objects.select_for_update().filter(
+        habit=habit, user=user, date__date=today
+      ).first()
+
+      if not record:
+        record = HabitRecord.objects.create(
+          habit=habit,
+          user=user,
+          date=timezone.make_aware(datetime.combine(today, time(0, 0))),
+          completed=False,
+        )
+
+      was_completed = record.completed
+
+      completed = request.data.get("completed", None)
+      if completed is not None:
+        record.completed = bool(completed)
+      if note is not None:
+        record.note = note
+
+      global_progress, _ = Progress.objects.select_for_update().get_or_create(user=user, habit=None)
+      habit_progress, _ = Progress.objects.select_for_update().get_or_create(user=user, habit=habit)
+
+      if record.completed and not was_completed:
+        record.completed_at = timezone.now()
+        global_progress.add_experience(20)
+        habit_progress.add_experience(25)
+      elif not record.completed and was_completed:
+        record.completed_at = None
+        global_progress.remove_experience(20)
+        habit_progress.remove_experience(25)
+
+      record.save()
+
+      record_serializer = HabitRecordSerializer(record)
+      habit_progress_serializer = ProgressSerializer(habit_progress)
+      global_progress_serializer = ProgressSerializer(global_progress)
+
+    return Response({
+      "record": record_serializer.data,
+      "habit_progress": habit_progress_serializer.data,
+      "global_progress": global_progress_serializer.data,
+      "current_streak": habit.current_streak(),
+    }, status=status.HTTP_200_OK)
+
+  @action(detail=True, methods=["post"], url_path="update-progress")
+  def update_progress(self, request, pk=None):
+    habit = self.get_object()
+    user = request.user
+    today = timezone.localdate()
+    direction = request.data.get("direction") # "increment" o "decrement"
+
+    if direction not in ("increment", "decrement"):
+      return Response(
+        {"detail": "direction debe ser 'increment' o 'decrement'."},
+        status=status.HTTP_400_BAD_REQUEST,
+      )
+
     record = HabitRecord.objects.filter(
       habit=habit, user=user, date__date=today
     ).first()
@@ -59,51 +120,42 @@ class HabitViewSet(viewsets.ModelViewSet):
       record = HabitRecord.objects.create(
         habit=habit,
         user=user,
-        date=timezone.make_aware (datetime.combine(today, time(0, 0))),
+        date=timezone.make_aware(datetime.combine(today, time(0, 0))),
         completed=False,
+        progress=0,
       )
 
-    # Guardar el estado anterior para detectar cambios reales
     was_completed = record.completed
+    target = habit.target_per_period or 1
 
-    # Actualizar estado
-    completed = request.data.get("completed", None)
-    if completed is not None:
-      record.completed = bool(completed)
-    if note is not None:
-      record.note = note
+    if direction == "increment":
+      record.progress = min(record.progress + 1, target)
+    else:
+      record.progress = max(record.progress - 1, 0)
 
-    from .models import Progress
-    from .serializers import ProgressSerializer
+    record.completed = record.progress >= target
 
-    global_progress, _= Progress.objects.get_or_create(user=user, habit=None)
-    habit_progress, _= Progress.objects.get_or_create(user=user, habit=habit)
+    global_progress, _ = Progress.objects.get_or_create(user=user, habit=None)
+    habit_progress, _ = Progress.objects.get_or_create(user=user, habit=habit)
 
-    # Si se marca como completado -  Detectar cambio de estado
     if record.completed and not was_completed:
-      # Solo sumar si no estaba completado antes - Cambió de no completado a completado -> Sumar XP
-        record.completed_at = timezone.now()
-        global_progress.add_experience(20) # XP Global
-        habit_progress.add_experience(25) # XP del hábito
+      record.completed_at = timezone.now()
+      global_progress.add_experience(20)
+      habit_progress.add_experience(25)
     elif not record.completed and was_completed:
-      # Cambió de completado a NO completado -> Restar XP (mínimo 0)
-      record.completed_at = None # Limpiamos la hora de completado si se desmarca
+      record.completed_at = None
       global_progress.remove_experience(20)
       habit_progress.remove_experience(25)
 
     record.save()
 
-    record_serializer = HabitRecordSerializer(record)
-    habit_progress_serializer = ProgressSerializer(habit_progress)
-    global_progress_serializer = ProgressSerializer(global_progress)
-
     return Response({
-      "record": record_serializer.data,
-      "habit_progress": habit_progress_serializer.data,
-      "global_progress": global_progress_serializer.data,
-      "current_streak": habit.current_streak(), 
+      "record": HabitRecordSerializer(record).data,
+      "habit_progress": ProgressSerializer(habit_progress).data,
+      "global_progress": ProgressSerializer(global_progress).data,
+      "current_streak": habit.current_streak(),
     }, status=status.HTTP_200_OK)
-    
+
   @action(detail=False, methods=["get"], url_path="today")
   def today(self, request):
     """
@@ -124,6 +176,7 @@ class HabitViewSet(viewsets.ModelViewSet):
         defaults={
           "date": timezone.make_aware(datetime.combine(today, time(0, 0))),
           "completed": False,
+          "progress": 0,
         },
       )
 
@@ -143,6 +196,9 @@ class HabitViewSet(viewsets.ModelViewSet):
         "description": habit.description,
         "completed_today": record.completed if record else False,
         "current_streak": habit.current_streak(),
+        "target_per_period": habit.target_per_period,
+        "current_progress": record.progress if record else 0,
+        "week_history": habit.week_history(), # FEATURE: historial de 7 días
         "category": {
           "id": habit.category.id if habit.category else None,
           "name": habit.category.name if habit.category else None,
