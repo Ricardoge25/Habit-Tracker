@@ -14,7 +14,6 @@ class CustomUser(AbstractUser):
     return self.username
 
   def current_streak(self, upto=None):
-    """Racha global: días consecutivos con al menos un hábito completado."""
     if upto is None:
       upto = timezone.localdate()
 
@@ -24,14 +23,16 @@ class CustomUser(AbstractUser):
       .values_list("day", flat=True)
     )
 
+    # Si hoy no se ha completado, empezamos a evaluar desde ayer
+    d = upto if upto in completed_days else upto - timedelta(days=1)
+    
     streak = 0
-    d = upto
     while d in completed_days:
       streak += 1
-      d = d - timedelta(days=1)
+      d -= timedelta(days=1)
 
     return streak
-
+  
   def monthly_completion_rate(self, upto=None):
     """% de días al mes (hasta hoy) con al menos un hábito completado."""
     if upto is None:
@@ -224,12 +225,14 @@ class Habit(models.Model):
       .annotate(day=TruncDate("date"))
       .values_list("day", flat=True)
     )
-  
+
+    # Evaluación tolerante al día de hoy en curso
+    d = upto if upto in completed else upto - timedelta(days=1)
+
     streak = 0
-    d = upto
     while d in completed:
       streak += 1
-      d = d - timedelta(days=1)
+      d -= timedelta(days=1)
 
     return streak
 
