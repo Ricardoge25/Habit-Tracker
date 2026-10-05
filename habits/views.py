@@ -3,7 +3,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from django.db import transaction
 from django.db.models import Q
 from django.contrib.auth import get_user_model
@@ -187,14 +187,21 @@ class HabitViewSet(viewsets.ModelViewSet):
         habit=habit, user=request.user, date__date=today
       ).first()
 
+      yesterday = today - timedelta(days=1)
+      yesterday_record = HabitRecord.objects.filter(
+        habit=habit, user=request.user, date__date=yesterday
+      ).first()
+
       # Buscamos el progreso del hábito
       progress = Progress.objects.filter(user=request.user, habit=habit).first()
       progress_data = ProgressSerializer(progress).data if progress else None
+      
       data.append({
         "id": habit.id,
         "name": habit.name,
         "description": habit.description,
         "completed_today": record.completed if record else False,
+        "yesterday_completed": yesterday_record.completed if yesterday_record else False,
         "current_streak": habit.current_streak(),
         "target_per_period": habit.target_per_period,
         "current_progress": record.progress if record else 0,
