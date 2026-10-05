@@ -23,12 +23,19 @@ class CustomUser(AbstractUser):
       .values_list("day", flat=True)
     )
 
-    # Si hoy no se ha completado, empezamos a evaluar desde ayer
-    d = upto if upto in completed_days else upto - timedelta(days=1)
-    
     streak = 0
-    while d in completed_days:
-      streak += 1
+    consecutive_misses = 0
+    d = upto
+
+    while True:
+      if d in completed_days:
+        streak += 1
+        consecutive_misses = 0
+      else:
+        consecutive_misses += 1
+        if consecutive_misses >= 2:
+          break
+
       d -= timedelta(days=1)
 
     return streak
@@ -217,21 +224,37 @@ class Habit(models.Model):
   
 
   def current_streak(self, upto=None):
+    """
+    Racha con tolerancia: un día aislado sin completar no rompe la racha,
+    pero dos días consecutivos sin completar sí la rompe.
+    """
     if upto is None:
       upto = timezone.localdate()
 
-    completed = set(
-      self.records.filter(completed=True, date__date__lte=upto)
+    completed_days = set(
+      self.records.filter(completed=True)
       .annotate(day=TruncDate("date"))
       .values_list("day", flat=True)
     )
 
-    # Evaluación tolerante al día de hoy en curso
-    d = upto if upto in completed else upto - timedelta(days=1)
+    streak = 0 
+    consecutive_misses = 0
+    d = upto
 
-    streak = 0
-    while d in completed:
-      streak += 1
+    # Si hoy aún no se completó, no se penaliza de inmediato:
+    # el día no ha terminado, así que empieza a evaluar desde el día anterior.
+    if d not in completed_days:
+      d -= timedelta(days=1)
+
+    while True:
+      if d in completed_days:
+        streak += 1
+        consecutive_misses = 0
+      else:
+        consecutive_misses += 1
+        if consecutive_misses >= 2:
+          break # Dos fallos seguidos: racha termina aquí
+
       d -= timedelta(days=1)
 
     return streak
