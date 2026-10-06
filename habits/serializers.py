@@ -1,6 +1,8 @@
 from rest_framework import serializers
 from .models import Habit, HabitRecord, CustomUser, Category, Progress
 from django.utils import timezone
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 class CategorySerializer(serializers.ModelSerializer):
   habit_count = serializers.SerializerMethodField()
@@ -69,7 +71,6 @@ class HabitRecordSerializer(serializers.ModelSerializer):
 
     return instance """
 
-
 class HabitSerializer(serializers.ModelSerializer):
   category = CategorySerializer(read_only=True)
   category_id = serializers.PrimaryKeyRelatedField(
@@ -109,18 +110,47 @@ class HabitSerializer(serializers.ModelSerializer):
       return ProgressSerializer(progress).data 
     return None
 
-
 class RegisterSerializer(serializers.ModelSerializer):
+  email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
+  password = serializers.CharField(write_only=True)
+
   class Meta:
     model = CustomUser
-    fields = ['id', 'username', 'email', 'password']
-    extra_kwargs = {'password': {'write_only': True}}
-    email = serializers.EmailField(required=False)
+    fields = ["id", "username", "email", "password"]
+
+  def to_internal_value(self, data):
+    # Normalizamos ANTES de que DRF valide: "" o " " -> None.
+    # Si lo dejáramos para validate_email, DRF nunca lo ejecutaría con "".
+    data = data.copy()
+    email = data.get("email")
+    if isinstance(email, str):
+      email = email.strip().lower()
+      data["email"] = email or None
+    return super().to_internal_value(data)
+
+  def validate_email(self, value):
+    # Aquí value ya es None o un email normalizado
+    if value is None:
+      return None
+    # Al declarar el campo a mano, DRF pierde el UniqueValidator automático,
+    # así que lo hacemos explícito (el email ya viene en minúsculas).
+    if CustomUser.objects.filter(email__iexact=value).exists():
+      raise serializers.ValidationError("Ya existe una cuenta con este correo.")
+    return value
+
+  def validate(self, attrs):
+    # Usuario "en memoria" para que UserAttributeSimilarityValidator
+    # rechace contraseñas parecidas al username o al email.
+    candidate = CustomUser(username=attrs.get("username"), email=attrs.get("email"))
+    try:
+      validate_password(attrs["password"], user=candidate)
+    except DjangoValidationError as e:
+      raise serializers.ValidationError({"password": list(e.messages)})
+    return attrs
 
   def create(self, validated_data):
-    user = CustomUser.objects.create_user(**validated_data)
-    return user
-  
+    return CustomUser.objects.create_user(**validated_data)
+
 class ProgressSerializer(serializers.ModelSerializer):
   xp_to_next = serializers.SerializerMethodField()
 

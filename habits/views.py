@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, status, generics
+from rest_framework import viewsets, permissions, status, generics, mixins
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -8,10 +8,13 @@ from django.db import transaction
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from .models import Habit, HabitRecord, CustomUser, Category, Progress
-from .serializers import HabitSerializer, HabitRecordSerializer, RegisterSerializer, CategorySerializer, ProgressSerializer
-
-# Create your views here.
-
+from .serializers import (
+  HabitSerializer,
+  HabitRecordSerializer,
+  RegisterSerializer,
+  CategorySerializer,
+  ProgressSerializer,
+)
 
 #--------------------------------------------------------
 # 📁 Categoría
@@ -162,8 +165,6 @@ class HabitViewSet(viewsets.ModelViewSet):
     Devuelve los hábitos del usuario con su registro diario.
     Si no existe, lo crea una sola vez por día (sin duplicar).
     """
-    from .serializers import ProgressSerializer
-
     today = timezone.localdate()
     habits = Habit.objects.filter(user=request.user)
 
@@ -241,11 +242,10 @@ class HabitRecordViewSet(viewsets.ModelViewSet):
 #--------------------------------------------------------
 # 👤 Registro de usuarios
 #--------------------------------------------------------
-class RegisterViewSet(viewsets.ModelViewSet):
-  User = get_user_model()
-  queryset = CustomUser.objects.all()
-  permission_classes = [permissions.AllowAny]
+class RegisterViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+  """Solo permite crear usuarios (POST). Sin list/retrieve/update/delete."""
   serializer_class = RegisterSerializer
+  permission_classes = [permissions.AllowAny]
 
 
 #--------------------------------------------------------
