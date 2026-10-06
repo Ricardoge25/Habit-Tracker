@@ -13,7 +13,12 @@ class CustomUser(AbstractUser):
   def __str__(self):
     return self.username
 
-  def current_streak(self, upto=None):
+  def save(self, *args, **kwargs):  
+    if not self.email:
+      self.email = None
+    super().save(*args, **kwargs) 
+
+  def current_streak(self, upto=None):  
     if upto is None:
       upto = timezone.localdate()
 
