@@ -156,7 +156,8 @@ class ProgressSerializer(serializers.ModelSerializer):
 
   class Meta:
     model = Progress
-    fields = ['user', 'habit', 'level', 'experience', 'xp_to_next']
+    fields = ['habit', 'level', 'experience', 'xp_to_next']
+    read_only_fields = fields
 
   def get_xp_to_next(self, obj):
     # ejemplo: cada nivel requiere 100 XP adicionales al anterior
