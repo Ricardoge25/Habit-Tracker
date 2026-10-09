@@ -133,3 +133,21 @@ class ProgressSecurityTests(APITestCase):
     res = self.client.get("progress-global-progress")
     self.assertEqual(res.status_code, 404)
 
+  def test_global_progress_returns_streak_and_monthly(self):
+    """El único endpoint de progreso que usa el frontend."""
+    res = self.client.get(reverse("progress-global-progress"))
+    self.assertEqual(res.status_code, 200)
+    self.assertIn("current_streak", res.data)
+    self.assertIn("monthly", res.data)
+    self.assertIn("level", res.data)
+
+  def test_toggle_completion_returns_progress(self):
+    """Completar un hábito propio debe responder 200 con el progreso."""
+    my_habit = Habit.objects.create(user=self.alice, name="Estirar")
+    res = self.client.post(
+      reverse("habit-toggle-completion", args=[my_habit.pk]),
+      {"completed": True},
+      format="json",
+    )
+    self.assertEqual(res.status_code, 200, res.data)
+    self.assertEqual(res.data["habit_progress"]["experience"], 25)
