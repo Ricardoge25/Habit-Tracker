@@ -2,6 +2,7 @@ from rest_framework import viewsets, permissions, status, generics, mixins
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from datetime import datetime, time, timedelta
 from django.db import transaction
@@ -25,7 +26,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
   def get_queryset(self):
     return Category.objects.filter(user=self.request.user)
-  
+
   def perform_create(self, serializer):
     serializer.save(user=self.request.user)
 
@@ -38,13 +39,13 @@ class HabitViewSet(viewsets.ModelViewSet):
 
   def get_queryset(self):
     return Habit.objects.filter(user=self.request.user)
-  
+
   def perform_create(self, serializer):
     serializer.save(user=self.request.user)
 
   def update(self, request, *args, **kwargs):
     """Evita que al editar se reinicien campos no enviados."""
-    kwargs['partial'] = True  # 👈 Forzamos PATCH siempre
+    kwargs['partial'] = True 
     return super().update(request, *args, **kwargs)
 
   @action(detail=True, methods=["post"], url_path="toggle-completion")
@@ -111,7 +112,7 @@ class HabitViewSet(viewsets.ModelViewSet):
 
     if direction not in ("increment", "decrement"):
       return Response(
-        {"detail": "direction debe ser 'increment' o 'decrement'."},
+        {"detail": "direction debe ser 'increment' or 'decrement'."},
         status=status.HTTP_400_BAD_REQUEST,
       )
 
@@ -139,7 +140,7 @@ class HabitViewSet(viewsets.ModelViewSet):
     record.completed = record.progress >= target
 
     global_progress, _ = Progress.objects.get_or_create(user=user, habit=None)
-    habit_progress, _ = Progress.objects.get_or_create(user=user, habit=habit)
+    habit_progress, _ = Progress.objects.get_or_create(user=user, habit=habit)    
 
     if record.completed and not was_completed:
       record.completed_at = timezone.now()
@@ -162,8 +163,8 @@ class HabitViewSet(viewsets.ModelViewSet):
   @action(detail=False, methods=["get"], url_path="today")
   def today(self, request):
     """
-    Devuelve los hábitos del usuario con su registro diario.
-    Si no existe, lo crea una sola vez por día (sin duplicar).
+    Devuelve los hábitos del usuario con su registro diario
+    Si no existe, lo crea una sola vez por día
     """
     today = timezone.localdate()
     habits = Habit.objects.filter(user=request.user)
@@ -196,7 +197,8 @@ class HabitViewSet(viewsets.ModelViewSet):
       # Buscamos el progreso del hábito
       progress = Progress.objects.filter(user=request.user, habit=habit).first()
       progress_data = ProgressSerializer(progress).data if progress else None
-      
+
+      # Payload
       data.append({
         "id": habit.id,
         "name": habit.name,
@@ -206,7 +208,7 @@ class HabitViewSet(viewsets.ModelViewSet):
         "current_streak": habit.current_streak(),
         "target_per_period": habit.target_per_period,
         "current_progress": record.progress if record else 0,
-        "week_history": habit.week_history(), # FEATURE: historial de 7 días
+        "week_history": habit.week_history(),
         "category": {
           "id": habit.category.id if habit.category else None,
           "name": habit.category.name if habit.category else None,
@@ -216,7 +218,7 @@ class HabitViewSet(viewsets.ModelViewSet):
       })
 
     return Response(data)
-  
+
 #--------------------------------------------------------
 # ⏱️ Registros de hábitos
 #--------------------------------------------------------
@@ -225,18 +227,18 @@ class HabitRecordViewSet(viewsets.ModelViewSet):
   serializer_class = HabitRecordSerializer
   permission_classes = [permissions.IsAuthenticated]
 
-  # Solo registros que el hábitos del usuario autenticado
+  # Solo registros que el hábito del usuario autenticado
   def get_queryset(self):
     return HabitRecord.objects.filter(habit__user=self.request.user)
-  
+
   # Verifica que el hábito pertenezca al usuario autenticado
   def perform_create(self, serializer):
     habit = serializer.validated_data.get("habit")
 
-    # Previene que un usuario cree records en hábitos de otro user 
+    # Previene que un usuario cree records en hábitos de otro user
     if habit.user != self.request.user:
-      raise PermissionDenied("No puedes registrar hábitos de otro usuario.")
-    
+      raise PermissionDenied("No puede registrar hábitos de otro usuario.")
+
     serializer.save(user=self.request.user)
 
 #--------------------------------------------------------
@@ -247,12 +249,12 @@ class RegisterViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
   serializer_class = RegisterSerializer
   permission_classes = [permissions.AllowAny]
 
-
 #--------------------------------------------------------
-#  😎 Registro de experiencia
+#  😎 Progreso / experiencia (SOLO LECTURA: el XP lo calcula el servidor)
 #--------------------------------------------------------
-class ProgressViewSet(viewsets.ModelViewSet):
-  queryset = Progress.objects.all()
+class ProgressViewSet(mixins.ListModelMixin,
+                      mixins.RetrieveModelMixin,
+                      viewsets.GenericViewSet):
   serializer_class = ProgressSerializer
   permission_classes = [permissions.IsAuthenticated]
 
@@ -266,9 +268,9 @@ class ProgressViewSet(viewsets.ModelViewSet):
 
     if habit_id:
       return Progress.objects.filter(user=user, habit_id=habit_id)
-    
-    return Progress.objects.filter(user=user, habit=None)
 
+    return Progress.objects.filter(user=user, habit=None)
+  
   def list(self, request, *args, **kwargs):
     """
     Si no se pasa habit_id, devuelve el progreso global.
@@ -277,7 +279,7 @@ class ProgressViewSet(viewsets.ModelViewSet):
     if queryset.exists():
       serializer = self.get_serializer(queryset, many=True)
       return Response(serializer.data)
-    
+
     return Response({"detail": "No hay progreso registrado."}, status=status.HTTP_404_NOT_FOUND)
   
   def retrieve(self, request, *args, **kwargs):
@@ -287,12 +289,12 @@ class ProgressViewSet(viewsets.ModelViewSet):
     instance = self.get_object()
     serializer = self.get_serializer(instance)
     return Response(serializer.data)
-  
-  @action(detail=False, methods=['get'], url_path='global')
+
+  @action(detail=False, methods=["get"], url_path='global')
   def global_progress(self, request):
     """
     Endpoint: /api/progress/global/
-    Crea o devuelve el progreso global del usuario.
+    Crea o devuelve el progreso global del usuario
     """
     progress, created = Progress.objects.get_or_create(user=request.user, habit=None)
     serializer = self.get_serializer(progress)
@@ -300,16 +302,24 @@ class ProgressViewSet(viewsets.ModelViewSet):
     data['current_streak'] = request.user.current_streak()
     data['monthly'] = request.user.monthly_completion_rate()
     return Response(data)
-  
+
   @action(detail=True, methods=['get'], url_path='habit-progress')
   def habit_progress(self, request, pk=None):
     """
-    Endpoint: /api/progress/habit-progress/<habit_id>/
-    Devuelve o crea el progreso asociado a un hábito del usuario autenticado.
+    Endpoint: /api/progress/<habit_id>/habit-progress/
+    Devuelve el progreso de un hábito del usuario autenticado (solo lectura).
+    Si el hábito no existe o es de otro usuario: 404
+    Si aún no tiene progreso: 200 con valores por defecto, sin escribir en la BD
     """
-    try:
-      progress, created = Progress.objects.get_or_create(user=request.user, habit_id=pk)
-      serializer = self.get_serializer(progress)
-      return Response(serializer.data)
-    except Exception as e:
-      return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    # 1. El hábito debe ser del usuario: la restricción va EN la consulta
+    habit = get_object_or_404(Habit, pk=pk, user=request.user)
+
+    # 2. Solo lectura: filter().first() en lugar de get_or_create
+    progress = Progress.objects.filter(user=request.user, habit=habit).first()
+
+    # 3. Sin progreso todavía es un estado válido: objeto en memoria, sin save()
+    if progress is None:
+      progress = Progress(user=request.user, habit=habit)
+
+    # 4. Serializer y devolver
+    return Response(self.get_serializer(progress).data)
