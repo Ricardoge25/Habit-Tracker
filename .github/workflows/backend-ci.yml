@@ -1,0 +1,66 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      db:
+        image: postgres:15
+        env:
+          POSTGRES_DB: habitdb
+          POSTGRES_USER: habituser
+          POSTGRES_PASSWORD: habitpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U habituser -d habitdb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      SECRET_KEY: ci-only-insecure-key-not-used-anywhere-else
+      DEBUG: "False"
+      ALLOWED_HOST: localhost,127.0.0.1
+      POSTGRES_DB: habitdb
+      POSTGRES_USER: habituser
+      POSTGRES_PASSWORD: habitpass
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3-11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Verificar que no falten migraciones
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Ejecutar tests
+        run: python manage.py test habits -v 2
