@@ -151,3 +151,46 @@ class ProgressSecurityTests(APITestCase):
     )
     self.assertEqual(res.status_code, 200, res.data)
     self.assertEqual(res.data["habit_progress"]["experience"], 25)
+
+class HabitNameTests(APITestCase):
+  def setUp(self):
+    self.alice = CustomUser.objects.create_user(username="alice", password="Alice#Segura2025")
+    self.bob = CustomUser.objects.create_user(username='bob', password="Bob#Segura2025")
+    self.client.force_authenticate(self.alice)
+    self.url = reverse("habit-list")
+
+  def test_duplicate_name_returns_400_not_500(self):
+    Habit.objects.create(user=self.alice, name="Leer")
+    res = self.client.post(self.url, {"name": "Leer"}, format="json")
+    self.assertEqual(res.status_code, 400)
+    self.assertIn("name", res.data)
+    self.assertEqual(Habit.objects.filter(user=self.alice).count(), 1)
+
+  def test_duplicate_name_ignores_case_and_surrounding_spaces(self):
+    Habit.objects.create(user=self.alice, name="Leer")
+    res = self.client.post(self.url, {"name": " Leer"}, format="json")
+    self.assertEqual(res.status_code, 400)
+
+  def test_two_users_can_use_the_same_habit_name(self):
+    Habit.objects.create(user=self.bob, name="Leer")
+    res = self.client.post(self.url, {"name": "Leer"}, format="json")
+    self.assertEqual(res.status_code, 201)
+
+  def test_can_edit_habit_keeping_its_own_name(self):
+    habit = Habit.objects.create(user=self.alice, name="Leer")
+    res = self.client.patch(
+      reverse("habit-detail", args=[habit.pk]),
+      {"name": "Leer", "description": "30 minutos"},
+      format="json",
+    )
+    self.assertEqual(res.status_code, 200, res.data)
+
+  def test_cannot_rename_habit_to_an_existing_name(self):
+    Habit.objects.create(user=self.alice, name="Leer")
+    other = Habit.objects.create(user=self.alice, name="Correr")
+    res = self.client.patch(
+      reverse("habit-detail", args=[other.pk]), {"name": "leer"}, format="json"
+    )
+    self.assertEqual(res.status_code, 400)
+    other.refresh_from_db()
+    self.assertEqual(other.name, "Correr")
