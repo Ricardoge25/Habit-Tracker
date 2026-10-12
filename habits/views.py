@@ -1,11 +1,11 @@
 from rest_framework import viewsets, permissions, status, generics, mixins
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from datetime import datetime, time, timedelta
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from .models import Habit, HabitRecord, CustomUser, Category, Progress
@@ -40,8 +40,24 @@ class HabitViewSet(viewsets.ModelViewSet):
   def get_queryset(self):
     return Habit.objects.filter(user=self.request.user)
 
+  def _save_or_400(self, serializer, **kwargs):
+    """
+    Red de seguridad: validate_name ya rechaza duplicados, pero si dos peticiones
+    simultáneas pasan esa validación a la vez, la restricción única de la BD gana.
+    Lo convertimos en 400 (error del cliente) en lugar de un 500.
+    atomic() evita dejar rota la transacción tras el IntegrityError.
+    """
+    try:
+      with transaction.atomic():
+        serializer.save(**kwargs)
+    except IntegrityError:
+      raise ValidationError({"name": ["Ya tienes un hábito con ese nombre."]})
+
   def perform_create(self, serializer):
-    serializer.save(user=self.request.user)
+    self._save_or_400(serializer, user=self.request.user)
+
+  def perform_update(self, serializer):
+    self._save_or_400(serializer)
 
   def update(self, request, *args, **kwargs):
     """Evita que al editar se reinicien campos no enviados."""

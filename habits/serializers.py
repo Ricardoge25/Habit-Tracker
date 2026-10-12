@@ -48,28 +48,6 @@ class HabitRecordSerializer(serializers.ModelSerializer):
         raise serializers.ValidationError("El progreso no puede superar la meta del hábito")
       
     return value
-  
-  """ def update(self, instance, validated_data):
-  
-    #Cuando un hábito se marca como completado, actualiza la experiencia global del usuario.
-
-    user = self.context["request"].user
-    completed_before = instance.completed # estado anterior
-    instance = super().update(instance, validated_data)
-
-    # Si el usuario lo acaba de completar (de False a True)
-    if not completed_before and instance.completed:
-      from .models import Progress
-
-      # progreso global (habit=None)
-      global_progress, _ = Progress.objects.get_or_create(user=user, habit=None)
-      global_progress.add_experience(25) # XP global
-
-      # progreso independiente de cada hábito
-      habit_progress, _ = Progress.objects.get_or_create(user=user, habit=instance.habit)
-      habit_progress.add_experience(10) # XP por hábito 
-
-    return instance """
 
 class HabitSerializer(serializers.ModelSerializer):
   category = CategorySerializer(read_only=True)
@@ -97,6 +75,21 @@ class HabitSerializer(serializers.ModelSerializer):
     request = self.context.get("request")
     if request and hasattr(request, "user"):
       self.fields["category_id"].queryset = Category.objects.filter(user=request.user)
+
+  def validate_name(self, value):
+    # DRF ya recortó los espacios (trim_whitespace=True por defecto).
+    # La restricción unique_together de la BD distingue mayúsculas ("Leer" != "leer"),
+    # así que la regla de negocio "no repetir nombre" se valida aquí, con iexact.
+    user = self.context["request"].user
+    qs = Habit.objects.filter(user=user, name__iexact=value)
+
+    # Al editar, el propio hábito no cuenta como duplicado de sí mismo
+    if self.instance:
+      qs = qs.exclude(pk=self.instance.pk)
+
+    if qs.exists():
+      raise serializers.ValidationError("Ya tienes un hábito con ese nombre.")
+    return value
 
   def get_completed_today(self, obj):
     """Devuelve si el hábito está completado hoy."""
