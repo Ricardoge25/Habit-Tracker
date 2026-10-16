@@ -395,4 +395,18 @@ class Progress(models.Model):
   class Meta:
     verbose_name = "Progreso"
     verbose_name_plural = "Progresos"
-    unique_together = ("user", "habit") # Un progreso por hábito o uno global
+    constraints = [
+      # Un progreso por (usuario, hábito) cuando hay hábito
+      models.UniqueConstraint(
+        fields=["user", "habit"],
+        condition=models.Q(habit__isnull=False),
+        name="unique_progress_per_user_habit",
+      ),
+      # UN solo progreso global por usuario. unique_together no lo cubre
+      # porque en SQL NULL != NULL.
+      models.UniqueConstraint(
+        fields=["user"],
+        condition=models.Q(habit__isnull=True),
+        name="unique_global_progress_per_user",
+      ),
+    ]
