@@ -310,11 +310,13 @@ class ProgressViewSet(mixins.ListModelMixin,
   def global_progress(self, request):
     """
     Endpoint: /api/progress/global/
-    Crea o devuelve el progreso global del usuario
+    Devuelve el progreso global. Si el usuario aún no tiene, responde con los
+    valores por defecto (nivel 1, 0 XP) SIN escribir en la BD.
     """
-    progress, created = Progress.objects.get_or_create(user=request.user, habit=None)
-    serializer = self.get_serializer(progress)
-    data = serializer.data
+    progress = Progress.objects.filter(user=request.user, habit=None).first()
+    if progress is None:
+      progress = Progress(user=request.user, habit=None)
+    data = self.get_serializer(progress).data
     data['current_streak'] = request.user.current_streak()
     data['monthly'] = request.user.monthly_completion_rate()
     return Response(data)

@@ -194,3 +194,31 @@ class HabitNameTests(APITestCase):
     self.assertEqual(res.status_code, 400)
     other.refresh_from_db()
     self.assertEqual(other.name, "Correr")
+
+class GlobalProgressNewUserTests(APITestCase):
+  def setUp(self):
+    self.user = CustomUser.objects.create_user(username="nuevo", password="Nuevo#Segura2026")
+    self.client.force_authenticate(self.user)
+
+  def test_new_user_gets_defaults_and_get_writes_nothing(self):
+    before = Progress.objects.count()
+    res = self.client.get(reverse("progress-global-progress"))
+    self.assertEqual(res.status_code, 200)
+    self.assertEqual(res.data["level"], 1)
+    self.assertEqual(res.data["experience"], 0)
+    self.assertEqual(Progress.objects.count(), before)
+
+  def test_database_rejects_second_global_progress(self):
+    from django.db import IntegrityError, transaction
+    Progress.objects.create(user=self.user, habit=None)
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        Progress.objects.create(user=self.user,  habit=None)
+
+  def test_database_rejects_duplicate_progress_for_same_habit(self):
+    from django.db import IntegrityError, transaction
+    habit = Habit.objects.create(user=self.user, name="Leer")
+    Progress.objects.create(user=self.user, habit=habit)
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        Progress.objects.create(user=self.user, habit=habit)
