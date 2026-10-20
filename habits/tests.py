@@ -151,3 +151,74 @@ class ProgressSecurityTests(APITestCase):
     )
     self.assertEqual(res.status_code, 200, res.data)
     self.assertEqual(res.data["habit_progress"]["experience"], 25)
+
+class HabitNameTests(APITestCase):
+  def setUp(self):
+    self.alice = CustomUser.objects.create_user(username="alice", password="Alice#Segura2025")
+    self.bob = CustomUser.objects.create_user(username='bob', password="Bob#Segura2025")
+    self.client.force_authenticate(self.alice)
+    self.url = reverse("habit-list")
+
+  def test_duplicate_name_returns_400_not_500(self):
+    Habit.objects.create(user=self.alice, name="Leer")
+    res = self.client.post(self.url, {"name": "Leer"}, format="json")
+    self.assertEqual(res.status_code, 400)
+    self.assertIn("name", res.data)
+    self.assertEqual(Habit.objects.filter(user=self.alice).count(), 1)
+
+  def test_duplicate_name_ignores_case_and_surrounding_spaces(self):
+    Habit.objects.create(user=self.alice, name="Leer")
+    res = self.client.post(self.url, {"name": " Leer"}, format="json")
+    self.assertEqual(res.status_code, 400)
+
+  def test_two_users_can_use_the_same_habit_name(self):
+    Habit.objects.create(user=self.bob, name="Leer")
+    res = self.client.post(self.url, {"name": "Leer"}, format="json")
+    self.assertEqual(res.status_code, 201)
+
+  def test_can_edit_habit_keeping_its_own_name(self):
+    habit = Habit.objects.create(user=self.alice, name="Leer")
+    res = self.client.patch(
+      reverse("habit-detail", args=[habit.pk]),
+      {"name": "Leer", "description": "30 minutos"},
+      format="json",
+    )
+    self.assertEqual(res.status_code, 200, res.data)
+
+  def test_cannot_rename_habit_to_an_existing_name(self):
+    Habit.objects.create(user=self.alice, name="Leer")
+    other = Habit.objects.create(user=self.alice, name="Correr")
+    res = self.client.patch(
+      reverse("habit-detail", args=[other.pk]), {"name": "leer"}, format="json"
+    )
+    self.assertEqual(res.status_code, 400)
+    other.refresh_from_db()
+    self.assertEqual(other.name, "Correr")
+
+class GlobalProgressNewUserTests(APITestCase):
+  def setUp(self):
+    self.user = CustomUser.objects.create_user(username="nuevo", password="Nuevo#Segura2026")
+    self.client.force_authenticate(self.user)
+
+  def test_new_user_gets_defaults_and_get_writes_nothing(self):
+    before = Progress.objects.count()
+    res = self.client.get(reverse("progress-global-progress"))
+    self.assertEqual(res.status_code, 200)
+    self.assertEqual(res.data["level"], 1)
+    self.assertEqual(res.data["experience"], 0)
+    self.assertEqual(Progress.objects.count(), before)
+
+  def test_database_rejects_second_global_progress(self):
+    from django.db import IntegrityError, transaction
+    Progress.objects.create(user=self.user, habit=None)
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        Progress.objects.create(user=self.user,  habit=None)
+
+  def test_database_rejects_duplicate_progress_for_same_habit(self):
+    from django.db import IntegrityError, transaction
+    habit = Habit.objects.create(user=self.user, name="Leer")
+    Progress.objects.create(user=self.user, habit=habit)
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        Progress.objects.create(user=self.user, habit=habit)
