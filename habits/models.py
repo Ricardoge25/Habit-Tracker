@@ -381,11 +381,22 @@ class Progress(models.Model):
     self.save()
 
   def remove_experience(self, amount):
-    """Resta experiencia sin bajar de nivel. Mínimo 0 XP en el nivel actual."""
-    self.experience = max(0, self.experience - amount)
-    self.save()
+    """
+    Resta experiencia y, si hace falta, baja de nivel.
+    Es el inverso exacto de add_experience: sumar X y luego restar X deja el
+    nivel y la experiencia como estaban (así marcar/desmarcar no regala niveles).
+    El mínimo es nivel 1 con 0 XP.
+    """
+    self.experience -= amount
 
-    # Mientras la experiencia sea negativa y no estemos en nivel 
+    # "Pedir prestado" al nivel anterior mientras falte experiencia
+    while self.experience < 0 and self.level > 1:
+      self.level -= 1
+      self.experience += self.xp_to_next_level()
+
+    # En nivel 1 no hay nivel anterior: el piso es 0 XP
+    self.experience = max(0, self.experience)
+    self.save()
 
   def __str__(self):
     if self.habit:
