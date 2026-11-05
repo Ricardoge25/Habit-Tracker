@@ -222,3 +222,63 @@ class GlobalProgressNewUserTests(APITestCase):
     with self.assertRaises(IntegrityError):
       with transaction.atomic():
         Progress.objects.create(user=self.user, habit=habit)
+
+class ProgressXpTests(APITestCase):
+  """
+  Sumar y restar XP debe ser simétrico: lo que se suma al completar un hábito
+  se resta exacto al desmarcarlo, incluidos los niveles.
+  """
+  def setUp(self):
+    self.user = CustomUser.objects.create_user(username="xp", password="Xp#Segura2026")
+    self.client.force_authenticate(self.user)
+
+  # --- Unitarios del modelo (sin pasar por la API) ---
+  def test_remove_experience_goes_back_down_a_level(self):
+    # Arrange: a 10 XP de subir (el nivel 2 cuesta 200)
+    progress = Progress.objects.create(user=self.user, level=2, experience=190)
+
+    # Act: sube de nivel y luego se deshace lo mismo
+    progress.add_experience(25)
+    self.assertEqual((progress.level, progress.experience), (3, 15))
+    progress.remove_experience(25)
+
+    # Assert: quedó exactamente como al inicio (en memoria y en la BD)
+    self.assertEqual((progress.level, progress.experience), (2, 190))
+    progress.refresh_from_db()
+    self.assertEqual((progress.level, progress.experience), (2, 190))
+
+  def test_remove_experience_can_drop_several_levels(self):
+    # XP total: 100 (nivel 1) + 200 (nivel 2) + 10 = 310. Restar 250 deja 60.
+    progress = Progress.objects.create(user=self.user, level=3, experience=10)
+
+    progress.remove_experience(250)
+
+    progress.refresh_from_db()
+    self.assertEqual((progress.level, progress.experience), (1, 60))
+
+  def test_remove_experience_never_goes_below_level_one_with_zero_xp(self):
+    # Guardián: este comportamiento ya existía y no debe romperse
+    progress = Progress.objects.create(user=self.user, level=1, experience=10)
+
+    progress.remove_experience(25)
+
+    progress.refresh_from_db()
+    self.assertEqual((progress.level, progress.experience), (1, 0))
+
+  # --- A través de la API: el exploit real ---
+  def test_toggling_a_habit_on_and_off_leaves_xp_unchanged(self):
+    # Arrange: a 10 XP de subir de nivel en el global (completar da +20)
+    habit = Habit.objects.create(user=self.user, name="Estirar")
+    Progress.objects.create(user=self.user, level=1, experience=90)
+    url = reverse("habit-toggle-completion", args=[habit.pk])
+
+    # Act: marcar y desmarcar varias veces
+    for _ in range(3):
+      self.client.post(url, {"completed": True}, format="json")
+      self.client.post(url, {"completed": False}, format="json")
+
+    # Assert: ni el global ni el del hábito ganaron nada
+    global_progress = Progress.objects.get(user=self.user, habit=None)
+    self.assertEqual((global_progress.level, global_progress.experience), (1, 90))
+    habit_progress = Progress.objects.get(user=self.user, habit=habit)
+    self.assertEqual((habit_progress.level, habit_progress.experience), (1, 0))
