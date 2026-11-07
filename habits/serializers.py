@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Habit, HabitRecord, CustomUser, Category, Progress
+from .models import Habit, HabitRecord, CustomUser, Category, Progress, MAX_TARGET_BY_FREQUENCY
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -90,6 +90,30 @@ class HabitSerializer(serializers.ModelSerializer):
     if qs.exists():
       raise serializers.ValidationError("Ya tienes un hábito con ese nombre.")
     return value
+
+  def validate(self, attrs):
+    # La meta y la frecuencia se validan JUNTAS. En un PATCH parcial no llegan
+    # todos los campos: lo que falte se toma del hábito que ya existe. Si no,
+    # cambiar solo `frequency` (o solo la meta) se saltaría la regla.
+    frequency = attrs.get("frequency", getattr(self.instance, "frequency", "daily"))
+    target = attrs.get("target_per_period", getattr(self.instance, "target_per_period", 1))
+
+    # None se interpreta como la meta por defecto (1): no hay nada que validar
+    if target is None:
+      return attrs
+
+    limit = MAX_TARGET_BY_FREQUENCY.get(frequency)    # el diario no tiene tope
+    if limit is not None and not (1 <= target <= limit):
+      label = dict(Habit.FREQUENCY_CHOICES)[frequency].lower()  # "semana" / "mensual"
+      raise serializers.ValidationError(
+        {"target_per_period": f"La meta de un hábito {label} debe estar entre 1 y {limit}."}
+      )
+    if limit is None and target < 1:
+      raise serializers.ValidationError(
+        {"target_per_period": "La meta debe ser de al menos 1."}
+      )
+
+    return attrs
 
   def get_completed_today(self, obj):
     """Devuelve si el hábito está completado hoy."""

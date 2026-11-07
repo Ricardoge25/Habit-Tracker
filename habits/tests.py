@@ -1,3 +1,7 @@
+from datetime import date
+
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -282,3 +286,200 @@ class ProgressXpTests(APITestCase):
     self.assertEqual((global_progress.level, global_progress.experience), (1, 90))
     habit_progress = Progress.objects.get(user=self.user, habit=habit)
     self.assertEqual((habit_progress.level, habit_progress.experience), (1, 0))
+
+class HabitFrequencyTargetTests(APITestCase):
+  """
+  En un hábito semanal/mensual la meta son DÍAS distintos por periodo,
+  con tope: semanal 1-5, mensual 1-28. El diario no tiene tope.
+  """
+  def setUp(self):
+    self.alice = CustomUser.objects.create_user(username="alice", password="Alice#Segura2025")
+    self.client.force_authenticate(self.alice)
+    self.url = reverse("habit-list")
+
+  def _create(self, **extra):
+    return self.client.post(self.url, {"name": "Gimnasio", **extra}, format="json")
+
+  def test_weekly_accepts_up_to_five_days(self):
+    res = self._create(frequency="weekly", target_per_period=5)
+    self.assertEqual(res.status_code, 201, res.data)
+    habit = Habit.objects.get(user=self.alice, name="Gimnasio")
+    self.assertEqual((habit.frequency, habit.target_per_period), ("weekly", 5))
+
+  def test_weekly_rejects_more_than_five_days(self):
+    res = self._create(frequency="weekly", target_per_period=6)
+    self.assertEqual(res.status_code, 400)
+    self.assertIn("target_per_period", res.data)
+    self.assertFalse(Habit.objects.filter(user=self.alice).exists())
+
+  def test_monthly_accepts_up_to_28_days(self):
+    res = self._create(frequency="monthly", target_per_period=28)
+    self.assertEqual(res.status_code, 201, res.data)
+    habit = Habit.objects.get(user=self.alice, name="Gimnasio")
+    self.assertEqual((habit.frequency, habit.target_per_period), ("monthly", 28))
+
+  def test_monthly_rejects_more_than_28_days(self):
+    res = self._create(frequency="monthly", target_per_period=29)
+    self.assertEqual(res.status_code, 400)
+    self.assertIn("target_per_period", res.data)
+    self.assertFalse(Habit.objects.filter(user=self.alice).exists())
+
+  def test_rejects_zero_target_for_every_frequency(self):
+    for frequency in ["daily", "weekly", "monthly"]:
+      res = self._create(frequency=frequency, target_per_period=0)
+      self.assertEqual(res.status_code, 400, frequency)
+      self.assertIn("target_per_period", res.data, frequency)
+    self.assertFalse(Habit.objects.filter(user=self.alice).exists())
+
+  def test_daily_still_allows_high_targets(self):
+    # Guardián: en un diario la meta es "veces por día" y no tiene tope
+    res = self._create(frequency="daily", target_per_period=10)
+    self.assertEqual(res.status_code, 201, res.data)
+
+  def test_changing_frequency_checks_the_existing_target(self):
+    # PATCH parcial: solo llega `frequency`; la meta (10) viene del hábito guardado
+    habit = Habit.objects.create(
+      user=self.alice, name="Leer", frequency="daily", target_per_period=10
+    )
+
+    res = self.client.patch(
+      reverse("habit-detail", args=[habit.pk]), {"frequency": "weekly"}, format="json"
+    )
+
+    self.assertEqual(res.status_code, 400)
+    self.assertIn("target_per_period", res.data)
+    habit.refresh_from_db()
+    self.assertEqual(habit.frequency, "daily")
+
+  def test_changing_target_checks_the_existing_frequency(self):
+    # PATCH parcial: solo llega la meta; la frecuencia (weekly) viene del hábito guardado
+    habit = Habit.objects.create(
+      user=self.alice, name="Leer", frequency="weekly", target_per_period=3
+    )
+
+    res = self.client.patch(
+      reverse("habit-detail", args=[habit.pk]), {"target_per_period": 6}, format="json"
+    )
+
+    self.assertEqual(res.status_code, 400)
+    self.assertIn("target_per_period", res.data)
+    habit.refresh_from_db()
+    self.assertEqual(habit.target_per_period, 3)
+
+  def test_can_change_frequency_when_target_fits(self):
+    habit = Habit.objects.create(
+      user=self.alice, name="Leer", frequency="daily", target_per_period=3
+    )
+
+    res = self.client.patch(
+      reverse("habit-detail", args=[habit.pk]), {"frequency": "weekly"}, format="json"
+    )
+
+    self.assertEqual(res.status_code, 200, res.data)
+    habit.refresh_from_db()
+    self.assertEqual((habit.frequency, habit.target_per_period), ("weekly", 3))
+
+  def test_weekly_without_target_uses_default(self):
+    res = self._create(frequency="weekly")
+    self.assertEqual(res.status_code, 201, res.data)
+    habit = Habit.objects.get(user=self.alice, name="Gimnasio")
+    self.assertEqual(habit.target_per_period, 1)
+
+class HabitFrequencyConstraintTests(APITestCase):
+  """Segunda línea de defensa: la BD rechaza metas fuera de rango aunque no se pase por el serializer."""
+  def setUp(self):
+    self.user = CustomUser.objects.create_user(username="db", password="Db#Segura2026")
+
+  def test_database_rejects_weekly_target_above_five(self):
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        Habit.objects.create(
+          user=self.user, name="Leer", frequency="weekly", target_per_period=6
+        )
+    self.assertFalse(Habit.objects.filter(user=self.user).exists())
+
+  def test_database_rejects_monthly_target_above_28(self):
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        Habit.objects.create(
+          user=self.user, name="Leer", frequency="monthly", target_per_period=29
+        )
+    self.assertFalse(Habit.objects.filter(user=self.user).exists())
+
+  def test_database_accepts_the_limits(self):
+    Habit.objects.create(user=self.user, name="Semanal", frequency="weekly", target_per_period=5)
+    Habit.objects.create(user=self.user, name="Mensual", frequency="monthly", target_per_period=28)
+    Habit.objects.create(user=self.user, name="Diario", frequency="daily", target_per_period=10)
+    self.assertEqual(Habit.objects.filter(user=self.user).count(), 3)
+
+  def test_full_clean_reports_the_violation(self):
+    # Django valida las constraints también en full_clean (admin, ModelForm)
+    habit = Habit(user=self.user, name="Leer", frequency="weekly", target_per_period=6)
+    with self.assertRaises(ValidationError):
+      habit.full_clean()
+
+class PeriodBonusTests(APITestCase):
+  """
+  Un PeriodBonus significa "este hábito YA cobró el bonus de este periodo".
+  La unicidad en la BD evita cobrarlo dos veces aunque lleguen peticiones simultáneas.
+  """
+  def setUp(self):
+    self.user = CustomUser.objects.create_user(username="bonus", password="Bonus#Segura2026")
+    self.habit = Habit.objects.create(
+      user=self.user, name="Gimnasio", frequency="weekly", target_per_period=3
+    )
+    self.monday = date(2026, 11, 2)
+
+  def _bonus(self, habit=None, period_start=None, frequency="weekly", target=3):
+    from .models import PeriodBonus
+    return PeriodBonus.objects.create(
+      habit=habit or self.habit,
+      frequency=frequency,
+      period_start=period_start or self.monday,
+      target=target,
+      xp_habit=50,
+      xp_global=40,
+    )
+
+  def test_database_rejects_second_bonus_for_same_habit_and_period(self):
+    from .models import PeriodBonus
+    self._bonus()
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        self._bonus()
+    self.assertEqual(PeriodBonus.objects.filter(habit=self.habit).count(), 1)
+
+  def test_same_habit_can_earn_a_bonus_in_different_periods(self):
+    from .models import PeriodBonus
+    self._bonus(period_start=self.monday)
+    self._bonus(period_start=date(2026, 11, 9))
+    self.assertEqual(PeriodBonus.objects.filter(habit=self.habit).count(), 2)
+
+  def test_different_habits_can_earn_a_bonus_in_the_same_period(self):
+    from .models import PeriodBonus
+    other = Habit.objects.create(
+      user=self.user, name="Leer", frequency="weekly", target_per_period=2
+    )
+    self._bonus()
+    self._bonus(habit=other)
+    self.assertEqual(PeriodBonus.objects.count(), 2)
+
+  def test_deleting_a_habit_deletes_its_bonuses(self):
+    from .models import PeriodBonus
+    self._bonus()
+    self.habit.delete()
+    self.assertEqual(PeriodBonus.objects.count(), 0)
+
+  def test_same_start_date_with_different_frequency_is_allowed(self):
+    # 1-feb-2027 es lunes (inicio de semana) Y día 1 (inicio de mes)
+    from .models import PeriodBonus
+    both = date(2027, 2, 1)
+    self._bonus(period_start=both, frequency="weekly")
+    self._bonus(period_start=both, frequency="monthly")
+    self.assertEqual(PeriodBonus.objects.filter(habit=self.habit).count(), 2)
+
+  def test_database_rejects_a_daily_bonus(self):
+    # Un hábito diario no tiene bonus de periodo
+    with self.assertRaises(IntegrityError):
+      with transaction.atomic():
+        self._bonus(frequency="daily") 

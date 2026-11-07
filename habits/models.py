@@ -6,6 +6,15 @@ from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
 from django.db.models.functions import TruncDate
 
+# Tope de "días distintos por periodo" según la frecuencia (el diario no tiene).
+# Viven a nivel del módulo para compartirlos con el serializer y con la constraint.
+MAX_WEEKLY_TARGET = 5       # 6 - 7 días por semana ya es, en la práctica, un hábito diario.
+MAX_MONTHLY_TARGET = 28     # febrero tiene 28 días: la meta es alcanzable en cualquier mes.
+MAX_TARGET_BY_FREQUENCY = {
+  "weekly": MAX_WEEKLY_TARGET,
+  "monthly": MAX_MONTHLY_TARGET,
+}
+
 class CustomUser(AbstractUser):
   """Modelo de usuario personalizado (si se necesitan campos extra en el futuro)"""
   email = models.EmailField(unique=True, null=True, blank=True)
@@ -135,6 +144,29 @@ class Habit(models.Model):
     ]"""
     ordering = ["-created_at"]
     verbose_name = "Hábito"
+    constraints = [
+      # Última línea de defensa: la BD rechaza una meta fuera de rango para la frecuencia.
+      # (Un diario no tiene tope. Si target_per_period es NULL la constraint no lo rechaza:
+      # en SQL un CHECK con NULL no es falso. NULL se interpreta como la meta por defecto.)
+      # OJO: los valores 5 y 28 quedan escritos en la migración; cambiarlos exige otra migración.
+      models.CheckConstraint(
+        condition=(
+          models.Q(frequency="daily")
+          | models.Q(
+            frequency="weekly",
+            target_per_period__gte=1,
+            target_per_period__lte=MAX_WEEKLY_TARGET,
+          )
+          | models.Q(
+            frequency="monthly",
+            target_per_period__gte=1,
+            target_per_period__lte=MAX_MONTHLY_TARGET,
+          )
+        ), 
+        name="habit_target_matches_frequency",
+        violation_error_message="La meta n es válida para la frecuencia elegida.",
+      ),
+    ]
 
   def __str__(self):
     return f"{self.name} ({self.user})"
@@ -421,3 +453,59 @@ class Progress(models.Model):
         name="unique_global_progress_per_user",
       ),
     ]
+
+class PeriodBonus(models.Model):
+  """
+  Bonus de XP por cumplir la meta de un periodo (semana o mes) de un hábito.
+
+  Una fila significa: "este hábito YA cobró el bonus de este periodo."
+  Guarda cuánto XP se dio, para poder revocar exactamente esa cantidad si el 
+  usuario desmarca y vuelve a quedar por debajo de la meta (aunque la fórmula
+  del bonus cambie después). No lleva `user`: ya se deriva de `habit.user`, y 
+  duplicarlo permitiría datos inconsistentes.
+  """
+  # Un hábito diario no tiene bonus de periodo: ya cobra XP cada día
+  BONUS_FREQUENCY_CHOICES = [
+    ("weekly", "Semanal"),
+    ("monthly", "Mensual"),
+  ]
+
+  habit = models.ForeignKey(
+    Habit,
+    on_delete=models.CASCADE,
+    related_name="period_bonuses"
+  )
+  # Frecuencia con la que se cobró. Forma parte de la unicidad porque un lunes puede
+  # ser a la vez inicio de semana y día 1 del mes (ej. 1-feb-2027): sin ella, un hábito
+  # que pasa de semanal a mensual chocaría con su propio bonus.
+  frequency = models.CharField(max_length=10, choices=BONUS_FREQUENCY_CHOICES)
+  # Lunes de la semana (o día 1 del mes). DateField y no DateTimeField: un periodo
+  # es una fecha de calendario, y así se evitan los problemas de zona horaria.
+  period_start = models.DateField()
+  # Meta vigente cuando se cobró. Sirve para decidir si hay que revocarlo al desmarcar,
+  # aunque el usuario edite la meta a mitad del periodo.
+  target = models.PositiveSmallIntegerField()
+  xp_habit = models.PositiveIntegerField()   # XP otorgado al progreso del hábito
+  xp_global = models.PositiveIntegerField()  # XP otorgado al progreso global
+  created_at = models.DateTimeField(auto_now_add=True)
+
+  class Meta:
+    verbose_name = "Bonus de periodo"
+    verbose_name_plural = "Bonus de periodo"
+    ordering = ["-period_start"]
+    constraints = [
+      # Garantiza que el bonus se cobre UNA sola vez por hábito, frecuencia y periodo,
+      # incluso si llegan dos peticiones simultáneas.
+      models.UniqueConstraint(
+        fields=["habit", "frequency", "period_start"],
+        name="unique_bonus_per_habit_frequency_period",
+      ),
+      # `choices` solo se valida en formularios; esto lo garantiza en la BD
+      models.CheckConstraint(
+        condition=models.Q(frequency__in=["weekly", "monthly"]),
+        name="period_bonus_frequency_not_daily",
+      ),
+    ]
+
+  def __str__(self):
+    return f"{self.habit.name} - {self.frequency} - {self.period_start}"
