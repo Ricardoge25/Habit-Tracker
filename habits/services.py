@@ -1,9 +1,12 @@
 """
-Reglas de negocio de los hábitos por period (día, semana, mes).
+Reglas de negocio de los hábitos por periodo (día, semana, mes).
 
-Todo lo de este bloque son FUNCIONES PURAS: reciben datos simples (fechas, números)
-y devuelven un resultado. No consultan la BD ni leen el reloj: "hoy" siempre llega
-como parámetro. Por eso se pueden probar sin base de datos y con cualquier fecha.
+Está dividido en dos partes:
+  1. FUNCIONES PURAS (periodos, conteo, racha, fórmula del bonus): reciben datos simples
+     (fechas, números) y devuelven un resultado. No consultan la BD ni leen el reloj:
+     "hoy" siempre llega como parámetro. Se prueban sin base de datos y con cualquier fecha.
+  2. FUNCIONES CON BD (al final): leen los registros y otorgan o revocan el bonus.
+     Son un borde delgado que se apoya en las puras.
 """
 import calendar
 from datetime import timedelta
@@ -26,17 +29,17 @@ STREAK_STEP_PERCENT = 10
 MAX_STREAK_STEPS = 5
 
 class StreakResult(NamedTuple):
-  times: int          # "veces": días completados dentro de la racha
-  periods_met: int    # periodos cumplidos dentro de la racha (el actual solo si ya está cumplido)
-  at_risk: bool       # hay racha de periodos cumplidos y, si no cumples este periodo, se rompe
+  times: int        # "veces": días completados dentro de la racha
+  periods_met: int  # periodos cumplidos dentro de la racha (el actual solo si ya está cumplido)
+  at_risk: bool     # hay racha de periodos cumplidos y, si no cumples este periodo, se rompe
 
 
 def period_bounds(frequency, day):
-  """Devuelve (inicio, fin), ambos incluidos, del perodo que contiene `day`."""
+  """Devuelve (inicio, fin), ambos incluidos, del periodo que contiene `day`."""
   if frequency == "daily":
     return day, day
   if frequency == "weekly":
-    # weekday(): lunes = 0 .. doming = 6. Restar esos días lleva siempre al lunes.
+    # weekday(): lunes = 0 ... domingo = 6. Restar esos días lleva siempre al lunes.
     start = day - timedelta(days=day.weekday())
     return start, start + timedelta(days=6)
   if frequency == "monthly":
@@ -52,7 +55,7 @@ def days_done_in_period(completed_days, frequency, day):
 
 
 def _needed(frequency, target):
-  # En un diaro basta un día completado (la meta "por día" ya la resume `completed`).
+  # En un diario basta un día completado (la meta "por día" ya la resume `completed`).
   # None se interpreta como la meta por defecto (1).
   return 1 if frequency == "daily" else (target or 1)
 
@@ -66,18 +69,19 @@ def streak_by_periods(completed_days, frequency, target, today):
   """
   Racha con tolerancia, evaluada por PERIODOS (la misma regla que la racha diaria):
     - un periodo fallado aislado se perdona; dos seguidos rompen la racha;
-    - el periodo en curso no se penaliza
+    - el periodo en curso no se penaliza hasta que termine;
+    - los días de un periodo perdonado cuentan solo si la racha continúa más atrás.
   """
-  days = {d for d in completed_days if d <= today}    # los días futuros no existen
+  days = {d for d in completed_days if d <= today}  # los días futuros no existen
   needed = _needed(frequency, target)
 
   start, _ = period_bounds(frequency, today)
   times = 0
   periods_met = 0
-  misses = 0          # periodos fallados consecutivos (el en curso no cuenta)
-  pending = 0         # días de periodos perdonados, aún sin confirmar
+  misses = 0            # periodos fallados consecutivos (el en curso no cuenta)
+  pending = 0           # días de periodos perdonados, aún sin confirmar
   current_met = False
-  previous_met = None # ¿se cumplió el periodo inmediatamente anterior?
+  previous_met = None   # ¿se cumplió el periodo inmediatamente anterior?
   is_current = True
 
   while True:
@@ -100,7 +104,7 @@ def streak_by_periods(completed_days, frequency, target, today):
       else:
         misses += 1
         if misses >= 2:
-          break   # dos periodos fallados seguidos: la racha termina
+          break  # dos periodos fallados seguidos: la racha termina
         pending += done
 
     # Retroceder al periodo anterior: el último día del anterior es el día previo al inicio
@@ -110,29 +114,32 @@ def streak_by_periods(completed_days, frequency, target, today):
   at_risk = periods_met > 0 and not current_met and previous_met is False
   return StreakResult(times=times, periods_met=periods_met, at_risk=at_risk)
 
+
 def calculate_period_bonus(frequency, target, previous_periods_met):
   """
-  Bonus de XP por cumplir la meta de un period. Devuelve (xp_hábito, xp_global)
-  `previous_period_met` = periodos cumplidos de la racha ANTERIORES al actual.
-  Solo para semanales y mensuales. Aritmética entera con UN solo redondeo hacia abajo
+  Bonus de XP por cumplir la meta de un periodo. Devuelve (xp_hábito, xp_global).
+  `previous_periods_met` = periodos cumplidos de la racha ANTERIORES al actual.
+  Solo para semanales y mensuales. Aritmética entera con UN solo redondeo hacia abajo.
   """
   if frequency not in ("weekly", "monthly"):
-    raise ValueError("Solo los hábitos semanales y mensuales tienen bonus de periodo")
+    raise ValueError("Solo los hábitos semanales y mensuales tienen bonus de periodo.")
 
   steps = min(max(previous_periods_met, 0), MAX_STREAK_STEPS)
-  # factor sobre 10_000: 50% × (100% + 10% × pasos)  ->  50 × (100 + 10 × pasos) 
+  # factor sobre 10_000: 50% × (100% + 10% × pasos)  ->  50 × (100 + 10 × pasos)
   factor = BONUS_PERCENT_OF_TARGET * (100 + STREAK_STEP_PERCENT * steps)
   xp_habit = target * XP_HABIT_PER_RECORD * factor // 10_000
   xp_global = target * XP_GLOBAL_PER_RECORD * factor // 10_000
   return xp_habit, xp_global
 
+
 # ---------------------------------------------------------------------------
-# Funciones con base de datos
+# Parte 2: funciones con base de datos
 # ---------------------------------------------------------------------------
 class BonusResult(NamedTuple):
   action: str     # "none" | "granted" | "revoked"
   xp_habit: int   # XP otorgado o revocado al progreso del hábito
   xp_global: int  # XP otorgado o revocado al progreso global
+
 
 NO_CHANGE = BonusResult("none", 0, 0)
 
@@ -147,12 +154,13 @@ def get_completed_days(habit):
     habit.records.filter(completed=True)
     .annotate(day=TruncDate("date"))
     .values_list("day", flat=True)
-  )  
+  )
+
 
 def _overlaps_other_frequency_bonus(habit, frequency, start, end):
   """
   ¿Ya cobró este hábito un bonus de OTRA frecuencia cuyo periodo se solapa con éste?
-  Evita cobrar el bonus semanal y el mensual por los mismo días cambiando la frecuencia.
+  Evita cobrar el bonus semanal y el mensual por los mismos días cambiando la frecuencia.
   """
   nearby = habit.period_bonuses.exclude(frequency=frequency).filter(
     period_start__gte=start - timedelta(days=31),
@@ -162,7 +170,7 @@ def _overlaps_other_frequency_bonus(habit, frequency, start, end):
     other_start, other_end = period_bounds(bonus.frequency, bonus.period_start)
     if other_start <= end and start <= other_end:
       return True
-    return False
+  return False
 
 
 def _lock_progress(habit):
@@ -182,8 +190,8 @@ def _lock_progress(habit):
 def _grant_bonus(habit, frequency, start, target, xp_habit, xp_global):
   with transaction.atomic():
     global_progress, habit_progress = _lock_progress(habit)
-    # La restricción única es la garantía real: si otra petición se adelantó, created = False
-    _ , created = PeriodBonus.objects.get_or_created(
+    # La restricción única es la garantía real: si otra petición se adelantó, created=False
+    _, created = PeriodBonus.objects.get_or_create(
       habit=habit,
       frequency=frequency,
       period_start=start,
@@ -214,10 +222,10 @@ def _revoke_bonus(habit, bonus):
 def sync_period_bonus(habit, today=None):
   """
   Deja el bonus del periodo EN CURSO coherente con los registros del hábito:
-    - meta alcanzada y sin bonus cobrado -> lo otorga;
+    - meta alcanzada y sin bonus cobrado  -> lo otorga;
     - bonus cobrado y días por debajo de la meta con la que se cobró -> lo revoca;
     - en cualquier otro caso no hace nada (es idempotente: llamarla dos veces no duplica XP).
-  Los periodos cerrados no se tocas nunca. Los diarios no tienen bonus.
+  Los periodos cerrados no se tocan nunca. Los diarios no tienen bonus.
   Pensada para llamarse desde la vista, justo después de guardar el registro.
   """
   if habit.frequency not in ("weekly", "monthly"):
@@ -227,7 +235,7 @@ def sync_period_bonus(habit, today=None):
     today = timezone.localdate()
 
   frequency = habit.frequency
-  target = habit.target_per_period or 1 
+  target = habit.target_per_period or 1
   start, end = period_bounds(frequency, today)
   days = get_completed_days(habit)
   done = days_done_in_period(days, frequency, today)
@@ -244,7 +252,7 @@ def sync_period_bonus(habit, today=None):
   if done < target or _overlaps_other_frequency_bonus(habit, frequency, start, end):
     return NO_CHANGE
 
-  # Al otorgar el periodo actual ya está cumplido: los PREVIOS son uno menos
+  # Al otorgarlo el periodo actual ya está cumplido: los PREVIOS son uno menos
   streak = streak_by_periods(days, frequency, target, today)
   xp_habit, xp_global = calculate_period_bonus(frequency, target, streak.periods_met - 1)
   return _grant_bonus(habit, frequency, start, target, xp_habit, xp_global)

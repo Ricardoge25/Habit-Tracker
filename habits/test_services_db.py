@@ -6,12 +6,13 @@ from django.utils import timezone
 from . import services
 from .models import CustomUser, Habit, HabitRecord, PeriodBonus, Progress
 
+# Referencia de calendario (2026): lunes 2-nov, viernes 6-nov ("hoy" en los tests).
 TODAY = date(2026, 11, 6)
 MONDAY = date(2026, 11, 2)
 
 
 def make_record(habit, day, completed=True, at=time(0, 0)):
-  """Crea un registro con la fecha/hora LOCAL (America/Bogotá), como hace la API."""
+  """Crea un registro con la fecha/hora LOCAL (America/Bogota), como hace la API."""
   return HabitRecord.objects.create(
     habit=habit,
     user=habit.user,
@@ -28,13 +29,15 @@ class GetCompletedDaysTests(TestCase):
   def test_returns_only_completed_days(self):
     make_record(self.habit, date(2026, 11, 3), completed=True)
     make_record(self.habit, date(2026, 11, 4), completed=False)
-    self.assertEqual(services.get_completed_days(self.habit), {date(2026,11, 3)})
+    self.assertEqual(services.get_completed_days(self.habit), {date(2026, 11, 3)})
 
   def test_uses_the_local_day_not_utc(self):
     # 23:59 en Bogotá son las 04:59 UTC del día SIGUIENTE: debe contar como el 4
     make_record(self.habit, date(2026, 11, 4), at=time(23, 59))
     make_record(self.habit, date(2026, 11, 5), at=time(0, 0))
-    self.assertEqual(services.get_completed_days(self.habit), {date(2026, 11, 4), date(2026, 11, 5)})
+    self.assertEqual(
+      services.get_completed_days(self.habit), {date(2026, 11, 4), date(2026, 11, 5)}
+    )
 
   def test_two_rows_of_the_same_day_count_once(self):
     make_record(self.habit, date(2026, 11, 3), at=time(8, 0))
@@ -45,7 +48,7 @@ class GetCompletedDaysTests(TestCase):
     other = Habit.objects.create(user=self.user, name="Correr")
     make_record(other, date(2026, 11, 3))
     self.assertEqual(services.get_completed_days(self.habit), set())
-  
+
 
 class DailyStreakCharacterizationTests(TestCase):
   """
@@ -78,7 +81,7 @@ class DailyStreakCharacterizationTests(TestCase):
         self.assertEqual(new.times, old)
 
 
-class SyncPeriodBonus(TestCase):
+class SyncPeriodBonusTests(TestCase):
   def setUp(self):
     self.user = CustomUser.objects.create_user(username="ana", password="Ana#Segura2026")
     self.habit = Habit.objects.create(
@@ -88,13 +91,13 @@ class SyncPeriodBonus(TestCase):
   # --- helpers ---
   def _week(self, monday, days_done, habit=None):
     for i in range(days_done):
-      make_record(habit or self.habit, monday + timedelta(days=1))
+      make_record(habit or self.habit, monday + timedelta(days=i))
 
   def _xp(self):
     habit_progress = Progress.objects.filter(user=self.user, habit=self.habit).first()
     global_progress = Progress.objects.filter(user=self.user, habit=None).first()
     return (
-      (habit_progress.level, habit_progress.experience) if habit_progress else (1, 0), 
+      (habit_progress.level, habit_progress.experience) if habit_progress else (1, 0),
       (global_progress.level, global_progress.experience) if global_progress else (1, 0),
     )
 
@@ -128,7 +131,7 @@ class SyncPeriodBonus(TestCase):
     self._week(MONDAY, 3)
 
     result = services.sync_period_bonus(self.habit, today=TODAY)
-    
+
     self.assertEqual(result, services.BonusResult("granted", 52, 42))
 
   def test_is_idempotent(self):
@@ -159,7 +162,7 @@ class SyncPeriodBonus(TestCase):
     # El bonus se guardó con 50/40 (otra fórmula, otra época): se resta eso, no 37/30
     PeriodBonus.objects.create(
       habit=self.habit, frequency="weekly", period_start=MONDAY, target=3,
-      xp_habits=50, xp_global=40,
+      xp_habit=50, xp_global=40,
     )
     Progress.objects.create(user=self.user, habit=self.habit, level=1, experience=50)
     Progress.objects.create(user=self.user, habit=None, level=1, experience=40)
@@ -168,7 +171,7 @@ class SyncPeriodBonus(TestCase):
     result = services.sync_period_bonus(self.habit, today=TODAY)
 
     self.assertEqual(result, services.BonusResult("revoked", 50, 40))
-    self.assertEqual(self._xp(), ((1, 0), (1,0)))
+    self.assertEqual(self._xp(), ((1, 0), (1, 0)))
 
   def test_grant_then_revoke_leaves_levels_untouched(self):
     # A 10 XP de subir: el bonus (37/30) cruza de nivel; revocarlo debe bajar de nivel
@@ -188,14 +191,14 @@ class SyncPeriodBonus(TestCase):
     last_monday = MONDAY - timedelta(weeks=1)
     PeriodBonus.objects.create(
       habit=self.habit, frequency="weekly", period_start=last_monday, target=3,
-      xp_habit=37, xp_global=30
+      xp_habit=37, xp_global=30,
     )
     self._week(last_monday, 1)  # la semana pasada quedó por debajo de la meta (editada a posteriori)
 
     result = services.sync_period_bonus(self.habit, today=TODAY)
 
     self.assertEqual(result, services.NO_CHANGE)
-    self.assertFalse(PeriodBonus.objects.filter(period_start=last_monday).exists())
+    self.assertTrue(PeriodBonus.objects.filter(period_start=last_monday).exists())
 
   def test_daily_habits_have_no_bonus(self):
     daily = Habit.objects.create(user=self.user, name="Meditar", frequency="daily")
@@ -208,7 +211,7 @@ class SyncPeriodBonus(TestCase):
 
   def test_changing_frequency_does_not_double_dip_in_the_same_period(self):
     self._week(MONDAY, 3)
-    services.sync_period_bonus(self.habit, today=TODAY)
+    services.sync_period_bonus(self.habit, today=TODAY)  # bonus semanal cobrado
     self.habit.frequency = "monthly"
     self.habit.save()
 
@@ -216,12 +219,12 @@ class SyncPeriodBonus(TestCase):
 
     self.assertEqual(result, services.NO_CHANGE)
     self.assertEqual(PeriodBonus.objects.count(), 1)
-    
+
   def test_after_changing_frequency_the_next_period_can_earn_again(self):
     self._week(MONDAY, 3)
     services.sync_period_bonus(self.habit, today=TODAY)
     self.habit.frequency = "monthly"
-    self.habit.save() 
+    self.habit.save()
     december_day = date(2026, 12, 8)
     for day in [date(2026, 12, 1), date(2026, 12, 2), date(2026, 12, 3)]:
       make_record(self.habit, day)
