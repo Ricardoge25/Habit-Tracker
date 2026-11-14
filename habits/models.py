@@ -320,7 +320,7 @@ class Habit(models.Model):
 class HabitRecord(models.Model):
   """Registro de cumplimiento de un hábito en una fecha"""
 
-  #Relación 1:N con el hábito
+  # Relación 1:N con el hábito
   habit = models.ForeignKey(
     Habit, 
     on_delete=models.CASCADE, 
@@ -330,7 +330,12 @@ class HabitRecord(models.Model):
   completed_at = models.DateTimeField(null=True, blank=True) 
   note = models.TextField(blank=True, null=True) # Nota o comentario
   progress = models.PositiveIntegerField(default=0) 
-  user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,null=True, blank=True,)
+
+  # Ledger de XP: cuánto XP dio ESTE registro al completarse. Al desmarcar se resta
+  # exactamente esto (no se recalcula): así editar la meta entre media no genera XP de más.
+  xp_habit = models.PositiveIntegerField(default=0)
+  xp_global = models.PositiveIntegerField(default=0)
+  user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,null=True, blank=True)
 
   class Meta:
     constraints = [
