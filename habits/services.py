@@ -256,3 +256,80 @@ def sync_period_bonus(habit, today=None):
   streak = streak_by_periods(days, frequency, target, today)
   xp_habit, xp_global = calculate_period_bonus(frequency, target, streak.periods_met - 1)
   return _grant_bonus(habit, frequency, start, target, xp_habit, xp_global)
+
+# ---------------------------------------------------------------------------
+# Parte 3: XP por día completado (regla B) y ledger en el registro
+# ---------------------------------------------------------------------------
+def xp_for_completed_day(frequency, target, days_before):
+  """
+  XP que da completar UN día (devuelve (xp_hábito, xp_global)).
+  Un diario siempre da XP. En semanales y mensuales solo dan XP los días hasta la meta
+  del periodo: `days_before` = días ya completados en el periodo ANTES de éste.
+  """
+  if frequency == "daily" or days_before < (target or 1):
+    return XP_HABIT_PER_RECORD, XP_GLOBAL_PER_RECORD
+  return 0, 0
+
+
+class CompletionResult(NamedTuple):
+  changed: bool    # ¿se modificó el registro?
+  xp_habit: int    # cambio NETO en el XP del hábito (negativo si se quitó XP), bonus incluido
+  xp_global: int   # ídem para el XP global
+  bonus: BonusResult
+
+
+NO_COMPLETION_CHANGE = CompletionResult(False, 0, 0, NO_CHANGE)
+
+
+def _bonus_delta(bonus):
+  if bonus.action == "granted":
+    return bonus.xp_habit, bonus.xp_global
+  if bonus.action == "revoked":
+    return -bonus.xp_habit, -bonus.xp_global
+  return 0, 0
+
+
+def set_day_completed(habit, record, completed, today=None):
+  """
+  Marca o desmarca el registro de HOY y mantiene el XP coherente:
+    - al completar: calcula el XP del día con la regla B y lo GUARDA en el registro (ledger);
+    - al desmarcar: resta EXACTAMENTE lo guardado, no lo recalcula (editar la meta entre
+      medias no permite ganar XP de más);
+    - después sincroniza el bonus del periodo (otorgar o revocar).
+  Debe llamarse dentro de transaction.atomic() y con `record` ya bloqueado por quien llama.
+  OJO: los Progress que usa por dentro quedan desactualizados tras el bonus; quien llama
+  debe volver a leerlos (refresh_from_db) antes de serializarlos.
+  """
+  if today is None:
+    today = timezone.localdate()
+  if record.completed == completed:
+    return NO_COMPLETION_CHANGE  # nada que hacer: tocar dos veces no duplica XP
+
+  with transaction.atomic():
+    global_progress, habit_progress = _lock_progress(habit)
+
+    if completed:
+      # El registro de hoy aún figura como NO completado en la BD, así que no se cuenta a sí mismo
+      days_before = days_done_in_period(get_completed_days(habit), habit.frequency, today)
+      xp_habit, xp_global = xp_for_completed_day(
+        habit.frequency, habit.target_per_period, days_before
+      )
+      record.completed = True
+      record.completed_at = timezone.now()
+      record.xp_habit, record.xp_global = xp_habit, xp_global
+      habit_progress.add_experience(xp_habit)
+      global_progress.add_experience(xp_global)
+      day_habit, day_global = xp_habit, xp_global
+    else:
+      day_habit, day_global = -record.xp_habit, -record.xp_global
+      habit_progress.remove_experience(record.xp_habit)
+      global_progress.remove_experience(record.xp_global)
+      record.completed = False
+      record.completed_at = None
+      record.xp_habit = record.xp_global = 0
+
+    record.save()
+    bonus = sync_period_bonus(habit, today)
+
+  bonus_habit, bonus_global = _bonus_delta(bonus)
+  return CompletionResult(True, day_habit + bonus_habit, day_global + bonus_global, bonus)
