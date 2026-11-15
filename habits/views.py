@@ -8,6 +8,7 @@ from datetime import datetime, time, timedelta
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.contrib.auth import get_user_model
+from . import services
 from .models import Habit, HabitRecord, CustomUser, Category, Progress
 from .serializers import (
   HabitSerializer,
@@ -64,117 +65,103 @@ class HabitViewSet(viewsets.ModelViewSet):
     kwargs['partial'] = True 
     return super().update(request, *args, **kwargs)
 
-  @action(detail=True, methods=["post"], url_path="toggle-completion")
-  def toggle_completion(self, request, pk=None):
-    habit = self.get_object()
-    user = request.user
-    today = timezone.localdate()
-    note = request.data.get("note", "")
-
-    with transaction.atomic():
-      # select_for_update() bloquea esta fila hasta que termine la transacción,
-      # así ninguna petición concurrente puede leerla "a medias"
-      record = HabitRecord.objects.select_for_update().filter(
-        habit=habit, user=user, date__date=today
-      ).first()
-
-      if not record:
-        record = HabitRecord.objects.create(
-          habit=habit,
-          user=user,
-          date=timezone.make_aware(datetime.combine(today, time(0, 0))),
-          completed=False,
-        )
-
-      was_completed = record.completed
-
-      completed = request.data.get("completed", None)
-      if completed is not None:
-        record.completed = bool(completed)
-      if note is not None:
-        record.note = note
-
-      global_progress, _ = Progress.objects.select_for_update().get_or_create(user=user, habit=None)
-      habit_progress, _ = Progress.objects.select_for_update().get_or_create(user=user, habit=habit)
-
-      if record.completed and not was_completed:
-        record.completed_at = timezone.now()
-        global_progress.add_experience(20)
-        habit_progress.add_experience(25)
-      elif not record.completed and was_completed:
-        record.completed_at = None
-        global_progress.remove_experience(20)
-        habit_progress.remove_experience(25)
-
-      record.save()
-
-      record_serializer = HabitRecordSerializer(record)
-      habit_progress_serializer = ProgressSerializer(habit_progress)
-      global_progress_serializer = ProgressSerializer(global_progress)
-
-    return Response({
-      "record": record_serializer.data,
-      "habit_progress": habit_progress_serializer.data,
-      "global_progress": global_progress_serializer.data,
-      "current_streak": habit.current_streak(),
-    }, status=status.HTTP_200_OK)
-
-  @action(detail=True, methods=["post"], url_path="update-progress")
-  def update_progress(self, request, pk=None):
-    habit = self.get_object()
-    user = request.user
-    today = timezone.localdate()
-    direction = request.data.get("direction") # "increment" o "decrement"
-
-    if direction not in ("increment", "decrement"):
-      return Response(
-        {"detail": "direction debe ser 'increment' or 'decrement'."},
-        status=status.HTTP_400_BAD_REQUEST,
-      )
-
-    record = HabitRecord.objects.filter(
-      habit=habit, user=user, date__date=today
-    ).first()
-
-    if not record:
-      record = HabitRecord.objects.create(
-        habit=habit,
-        user=user,
-        date=timezone.make_aware(datetime.combine(today, time(0, 0))),
-        completed=False,
-        progress=0,
-      )
-
-    was_completed = record.completed
-    target = habit.target_per_period or 1
-
-    if direction == "increment":
-      record.progress = min(record.progress + 1, target)
-    else:
-      record.progress = max(record.progress - 1, 0)
-
-    record.completed = record.progress >= target
-
-    global_progress, _ = Progress.objects.get_or_create(user=user, habit=None)
-    habit_progress, _ = Progress.objects.get_or_create(user=user, habit=habit)    
-
-    if record.completed and not was_completed:
-      record.completed_at = timezone.now()
-      global_progress.add_experience(20)
-      habit_progress.add_experience(25)
-    elif not record.completed and was_completed:
-      record.completed_at = None
-      global_progress.remove_experience(20)
-      habit_progress.remove_experience(25)
-
-    record.save()
-
+  # ---------- Apoyo para las acciones de completado ----------
+  def _completion_response(self, habit, record, result, today):
+    """
+    Respuesta común de toggle-completion y update-progress.
+    Se RELEEN los Progress de la BD: el bonus los modifica con otras instancias,
+    así que los que tenía la vista quedaron desactualizados.
+    """
+    user = self.request.user
+    global_progress = (
+      Progress.objects.filter(user=user, habit=None).first() or Progress(user=user, habit=None)
+    )
+    habit_progress = (
+      Progress.objects.filter(user=user, habit=habit).first() or Progress(user=user, habit=habit)
+    )
     return Response({
       "record": HabitRecordSerializer(record).data,
       "habit_progress": ProgressSerializer(habit_progress).data,
       "global_progress": ProgressSerializer(global_progress).data,
-      "current_streak": habit.current_streak(),
+      "current_streak": services.get_streak(habit, today).times,
+      "xp": {"habit": result.xp_habit, "global": result.xp_global},
+      "bonus": {
+        "action": result.bonus.action,
+        "xp_habit": result.bonus.xp_habit,
+        "xp_global": result.bonus.xp_global,
+      },
     }, status=status.HTTP_200_OK)
+
+  @action(detail=True, methods=["post"], url_path="toggle-completion")
+  def toggle_completion(self, request, pk=None):
+    habit = self.get_object()
+    today = timezone.localdate()
+
+    # No confiar en el tipo que manda el cliente: bool("false") es True en Python
+    completed = request.data.get("completed", None)
+    if completed is not None and not isinstance(completed, bool):
+      return Response(
+        {"detail": "completed debe ser true o false."},
+        status=status.HTTP_400_BAD_REQUEST,
+      )
+    note = request.data.get("note", None)  # solo se modifica si el cliente la envía
+
+    with transaction.atomic():
+      record = services.get_or_create_today_record(habit, request.user, today)
+      if note is not None:
+        record.note = note
+
+      wanted = record.completed if completed is None else completed
+      if wanted != record.completed:
+        # El contador de repeticiones y el estado "completado" no pueden contradecirse
+        if wanted:
+          record.progress = (habit.target_per_period or 1) if habit.frequency == "daily" else 1
+        else:
+          record.progress = 0
+
+      # Toda la lógica de XP vive en el servicio: la vista no decide nada
+      result = services.set_day_completed(habit, record, wanted, today)
+      if not result.changed:
+        record.save()  # el estado no cambió, pero la nota sí pudo cambiar
+
+    return self._completion_response(habit, record, result, today)
+
+  @action(detail=True, methods=["post"], url_path="update-progress")
+  def update_progress(self, request, pk=None):
+    habit = self.get_object()
+    today = timezone.localdate()
+
+    # Este endpoint cuenta repeticiones DENTRO de un día. En semanales y mensuales la
+    # meta son días, y se completan día a día con toggle-completion.
+    if habit.frequency != "daily":
+      return Response(
+        {"detail": "Los hábitos semanales y mensuales se completan con toggle-completion."},
+        status=status.HTTP_400_BAD_REQUEST,
+      )
+
+    direction = request.data.get("direction") # "increment" o "decrement"
+    if direction not in ("increment", "decrement"):
+      return Response(
+        {"detail": "direction debe ser 'increment' o 'decrement'."},
+        status=status.HTTP_400_BAD_REQUEST,
+      )
+
+    target = habit.target_per_period or 1
+
+    with transaction.atomic():
+      record = services.get_or_create_today_record(habit, request.user, today)
+
+      if direction == "increment":
+        record.progress = min(record.progress + 1, target)
+      else:
+        record.progress = max(record.progress - 1, 0)
+
+      result = services.set_day_completed(habit, record, record.progress >= target, today)
+      if not result.changed:
+        # set_day_completed solo guarda si cambia el estado; el contador hay que guardarlo igual
+        record.save(update_fields=["progress"])
+
+    return self._completion_response(habit, record, result, today)
 
   @action(detail=False, methods=["get"], url_path="today")
   def today(self, request):

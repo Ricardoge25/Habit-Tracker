@@ -38,7 +38,7 @@ class HabitRecordSerializer(serializers.ModelSerializer):
   class Meta:
     model = HabitRecord
     fields = "__all__"
-    read_only_fields = ["user"]
+    read_only_fields = ["user", "xp_habit", "xp_global"]
 
   def validate_progress(self, value):
     habit = self.initial_data.get("habit")
