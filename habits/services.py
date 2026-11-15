@@ -9,14 +9,14 @@ Está dividido en dos partes:
      Son un borde delgado que se apoya en las puras.
 """
 import calendar
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from typing import NamedTuple
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 
-from .models import PeriodBonus, Progress
+from .models import HabitRecord, PeriodBonus, Progress
 
 # XP que da cada registro completado (hoy viven literales en views.py; la Fase 3 los reemplaza)
 XP_HABIT_PER_RECORD = 25
@@ -333,3 +333,46 @@ def set_day_completed(habit, record, completed, today=None):
 
   bonus_habit, bonus_global = _bonus_delta(bonus)
   return CompletionResult(True, day_habit + bonus_habit, day_global + bonus_global, bonus)
+
+# ---------------------------------------------------------------------------
+# Parte 4: apoyo para las vistas
+# ---------------------------------------------------------------------------
+def get_or_create_today_record(habit, user, today=None):
+  """
+  Devuelve el registro de HOY del hábito (creándolo si no existe), BLOQUEADO hasta que
+  termine la transacción. Debe llamarse dentro de transaction.atomic().
+  Se usa filter().first() y n get_or_create a secas: si hubiera dos filas del mism día
+  (dato sucio), get_or_create daría MultipleObjectsReturned (un 500) y esto las tolera.
+  Si dos peticiones intentan crearlo a la vez, la restricción única hace fallar a una:
+  ese relee el que creó la otra (ya bloqueado) en vez de explotar.
+  """
+  if today is None:
+    today = timezone.localdate()
+
+  records = HabitRecord.objects.select_for_update().filter(
+    habit=habit, user=user, date__date=today
+  ).order_by("pk")
+  record = records.first()
+  if record is not None:
+    return record
+
+  try:
+    with transaction.atomic():
+      return HabitRecord.objects.create(
+        habit=habit,
+        user=user,
+        date=timezone.make_aware(datetime.combine(today, time(0, 0))),
+        completed=False,
+        progress=0,
+      )
+  except IntegrityError:
+    return records.first()
+
+
+def get_streak(habit, today=None):
+  """Racha del hábito (StreakResult) con la misma lógica para diarios, semanales y mensuales."""
+  if today is None:
+    today = timezone.localdate()
+  return streak_by_periods(
+    get_completed_days(habit), habit.frequency, habit.target_per_period, today
+  )
