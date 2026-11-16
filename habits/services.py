@@ -376,3 +376,54 @@ def get_streak(habit, today=None):
   return streak_by_periods(
     get_completed_days(habit), habit.frequency, habit.target_per_period, today
   )
+
+# ---------------------------------------------------------------------------
+# Parte 5: estado de un hábito para el endpoint `today`
+# ---------------------------------------------------------------------------
+class PeriodStatus(NamedTuple):
+  period_start: object    # date
+  period_end: object      # date
+  days_done: int          # días distintos completados en el periodo en curso
+  period_target: int      # días que exige el periodo (1 en un diario)
+  period_met: bool
+  streak_times: int       # "veces" de la racha
+  streak_periods: int     # periodos cumplidos de la racha 
+  at_risk: bool
+
+
+def period_status(completed_days, frequency, target, today):
+  """Todo el estado del periodo en curso de un hábito, calculado con las funciones puras."""
+  days = set(completed_days)
+  start, end = period_bounds(frequency, today)
+  needed = _needed(frequency, target)
+  done = days_done_in_period(days, frequency, today)
+  streak = streak_by_periods(days, frequency, target, today)
+  return PeriodStatus(
+    period_start=start,
+    period_end=end,
+    done=done,
+    period_target=needed,
+    period_met=done >= needed,
+    streak_times=streak.times,
+    streak_periods=streak.periods_met,
+    at_risk=streak.at_risk,
+  )
+
+
+def week_history_flags(completed_days, today):
+  """7 booleanos: los últimos 7 días terminando HOY (el último elemento es hoy)."""
+  days = set(completed_days)
+  return [(today - timedelta(days=6 - i)) in days for i in range(7)]
+
+
+def get_completed_days_by_habit(user):
+  """{habit_id}: {{días completados}} de TODOS los hábitos del usuario en UNA sola consulta."""
+  by_habit = {}
+  rows = (
+    HabitRecord.objects.filter(habit__user=user, completed=True)
+    .annotate(day=TruncDate("date"))
+    .values_list("habit_id", "day")
+  )
+  for habit_id, day in rows:
+    by_habit.setdefault(habit_id, set()).add(day)
+  return by_habit
