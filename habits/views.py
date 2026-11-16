@@ -1,5 +1,5 @@
 from rest_framework import viewsets, permissions, status, generics, mixins
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
@@ -243,28 +243,6 @@ class HabitViewSet(viewsets.ModelViewSet):
       })
 
     return Response(data)
-
-#--------------------------------------------------------
-# ⏱️ Registros de hábitos
-#--------------------------------------------------------
-class HabitRecordViewSet(viewsets.ModelViewSet):
-  """CRUD de registros de hábitos."""
-  serializer_class = HabitRecordSerializer
-  permission_classes = [permissions.IsAuthenticated]
-
-  # Solo registros que el hábito del usuario autenticado
-  def get_queryset(self):
-    return HabitRecord.objects.filter(habit__user=self.request.user)
-
-  # Verifica que el hábito pertenezca al usuario autenticado
-  def perform_create(self, serializer):
-    habit = serializer.validated_data.get("habit")
-
-    # Previene que un usuario cree records en hábitos de otro user
-    if habit.user != self.request.user:
-      raise PermissionDenied("No puede registrar hábitos de otro usuario.")
-
-    serializer.save(user=self.request.user)
 
 #--------------------------------------------------------
 # 👤 Registro de usuarios
