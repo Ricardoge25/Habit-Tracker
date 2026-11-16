@@ -118,7 +118,7 @@ class HabitSerializer(serializers.ModelSerializer):
   def get_completed_today(self, obj):
     """Devuelve si el hábito está completado hoy."""
     today = timezone.localdate()
-    return obj.records.filter(date=today, completed=True).exists()
+    return obj.records.filter(date__date=today, completed=True).exists()
   
   def get_progress(self, obj):
     user = self.context['request'].user
