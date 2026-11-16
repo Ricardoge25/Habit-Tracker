@@ -9,7 +9,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from . import services
-from .models import Habit, HabitRecord, CustomUser, Category, Progress
+from .models import Habit, HabitRecord, CustomUser, Category, Progress, PeriodBonus
 from .serializers import (
   HabitSerializer,
   HabitRecordSerializer,
@@ -58,7 +58,12 @@ class HabitViewSet(viewsets.ModelViewSet):
     self._save_or_400(serializer, user=self.request.user)
 
   def perform_update(self, serializer):
-    self._save_or_400(serializer)
+    with transaction.atomic():
+      self._save_or_400(serializer)
+      # El bonus de periodo se deriva de la meta y la frecuencia: si cambian, se re-sincroniza
+      # en el acto (si no, el XP dependería de qué endpoint se llame después).
+      if {"frequency", "target_per_period"} & set(serializer.validated_data):
+        services.sync_period_bonus(serializer.instance)
 
   def update(self, request, *args, **kwargs):
     """Evita que al editar se reinicien campos no enviados."""
@@ -166,58 +171,75 @@ class HabitViewSet(viewsets.ModelViewSet):
   @action(detail=False, methods=["get"], url_path="today")
   def today(self, request):
     """
-    Devuelve los hábitos del usuario con su registro diario
-    Si no existe, lo crea una sola vez por día
+    Estado del día de cada hábito. Es SOLO LECTURA: ausencia de registro = no completado.
+    Hace un número FIJO de consultas (no crece con los hábitos): hábitos con su categoría,
+    días completados, registros de hoy, progresos y bonus del periodo.
     """
+    user = request.user
     today = timezone.localdate()
-    habits = Habit.objects.filter(user=request.user)
 
-    for habit in habits:
-      # Garantiza que solo exista un registro por hábito y fecha
-      HabitRecord.objects.get_or_create(
-        habit=habit,
-        user=request.user,
-        date__date=today,  # compara solo la parte de la fecha
-        defaults={
-          "date": timezone.make_aware(datetime.combine(today, time(0, 0))),
-          "completed": False,
-          "progress": 0,
-        },
+    habits = list(Habit.objects.filter(user=user).select_related("category"))
+    if not habits:
+      return Response([])
+
+    days_by_habit = services.get_completed_days_by_habit(user)
+
+    todays_records = {}
+    for record in HabitRecord.objects.filter(habit__user=user, date__date=today).order_by("pk"):
+      todays_records.setdefault(record.habit_id, record)
+
+    progress_by_habit = {
+      p.habit_id: p for p in Progress.objects.filter(user=user, habit__isnull=False)
+    }
+
+    # Los bonus del periodo en curso: una semana o un mes empiezan a lo sumo 31 días atrás
+    bonuses = {
+      (b.habit_id, b.frequency, b.period_start): b
+      for b in PeriodBonus.objects.filter(
+        habit__user=user, period_start__gte=today - timedelta(days=31)
       )
+    }
 
-    # Prepara la respuesta
+    yesterday = today - timedelta(days=1)
     data = []
     for habit in habits:
-      record = HabitRecord.objects.filter(
-        habit=habit, user=request.user, date__date=today
-      ).first()
+      days = days_by_habit.get(habit.id, set())
+      period = services.period_status(days, habit.frequency, habit.target_per_period, today)
+      record = todays_records.get(habit.id)
+      progress = progress_by_habit.get(habit.id)
+      bonus = bonuses.get((habit.id, habit.frequency, period.period_start))
 
-      yesterday = today - timedelta(days=1)
-      yesterday_record = HabitRecord.objects.filter(
-        habit=habit, user=request.user, date__date=yesterday
-      ).first()
-
-      # Buscamos el progreso del hábito
-      progress = Progress.objects.filter(user=request.user, habit=habit).first()
-      progress_data = ProgressSerializer(progress).data if progress else None
-
-      # Payload
       data.append({
         "id": habit.id,
         "name": habit.name,
         "description": habit.description,
-        "completed_today": record.completed if record else False,
-        "yesterday_completed": yesterday_record.completed if yesterday_record else False,
-        "current_streak": habit.current_streak(),
+        "frequency": habit.frequency,
+        "completed_today": today in days,
+        "yesterday_completed": yesterday in days,
+        "current_streak": period.streak_times,
         "target_per_period": habit.target_per_period,
         "current_progress": record.progress if record else 0,
-        "week_history": habit.week_history(),
+        "week_history": services.week_history_flags(days, today),
         "category": {
           "id": habit.category.id if habit.category else None,
           "name": habit.category.name if habit.category else None,
           "color": habit.category.color if habit.category else None,
         },
-        "progress": progress_data
+        "progress": ProgressSerializer(progress).data if progress else None,
+        # Estado del periodo, calculado en el backend (el frontend solo lo pinta)
+        "period": {
+          "start": period.period_start.isoformat(),
+          "end": period.period_end.isoformat(),
+        },
+        "period_target": period.period_target,
+        "days_done": period.days_done,
+        "period_met": period.period_met,
+        "streak_times": period.streak_times,
+        "streak_periods": period.streak_periods,
+        "at_risk": period.at_risk,
+        "bonus_earned": (
+          {"xp_habit": bonus.xp_habit, "xp_global": bonus.xp_global} if bonus else None
+        ),
       })
 
     return Response(data)
