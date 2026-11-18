@@ -1,5 +1,5 @@
 from rest_framework import viewsets, permissions, status, generics, mixins
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
@@ -8,7 +8,8 @@ from datetime import datetime, time, timedelta
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.contrib.auth import get_user_model
-from .models import Habit, HabitRecord, CustomUser, Category, Progress
+from . import services
+from .models import Habit, HabitRecord, CustomUser, Category, Progress, PeriodBonus
 from .serializers import (
   HabitSerializer,
   HabitRecordSerializer,
@@ -57,205 +58,191 @@ class HabitViewSet(viewsets.ModelViewSet):
     self._save_or_400(serializer, user=self.request.user)
 
   def perform_update(self, serializer):
-    self._save_or_400(serializer)
+    with transaction.atomic():
+      self._save_or_400(serializer)
+      # El bonus de periodo se deriva de la meta y la frecuencia: si cambian, se re-sincroniza
+      # en el acto (si no, el XP dependería de qué endpoint se llame después).
+      if {"frequency", "target_per_period"} & set(serializer.validated_data):
+        services.sync_period_bonus(serializer.instance)
 
   def update(self, request, *args, **kwargs):
     """Evita que al editar se reinicien campos no enviados."""
     kwargs['partial'] = True 
     return super().update(request, *args, **kwargs)
 
-  @action(detail=True, methods=["post"], url_path="toggle-completion")
-  def toggle_completion(self, request, pk=None):
-    habit = self.get_object()
-    user = request.user
-    today = timezone.localdate()
-    note = request.data.get("note", "")
-
-    with transaction.atomic():
-      # select_for_update() bloquea esta fila hasta que termine la transacción,
-      # así ninguna petición concurrente puede leerla "a medias"
-      record = HabitRecord.objects.select_for_update().filter(
-        habit=habit, user=user, date__date=today
-      ).first()
-
-      if not record:
-        record = HabitRecord.objects.create(
-          habit=habit,
-          user=user,
-          date=timezone.make_aware(datetime.combine(today, time(0, 0))),
-          completed=False,
-        )
-
-      was_completed = record.completed
-
-      completed = request.data.get("completed", None)
-      if completed is not None:
-        record.completed = bool(completed)
-      if note is not None:
-        record.note = note
-
-      global_progress, _ = Progress.objects.select_for_update().get_or_create(user=user, habit=None)
-      habit_progress, _ = Progress.objects.select_for_update().get_or_create(user=user, habit=habit)
-
-      if record.completed and not was_completed:
-        record.completed_at = timezone.now()
-        global_progress.add_experience(20)
-        habit_progress.add_experience(25)
-      elif not record.completed and was_completed:
-        record.completed_at = None
-        global_progress.remove_experience(20)
-        habit_progress.remove_experience(25)
-
-      record.save()
-
-      record_serializer = HabitRecordSerializer(record)
-      habit_progress_serializer = ProgressSerializer(habit_progress)
-      global_progress_serializer = ProgressSerializer(global_progress)
-
-    return Response({
-      "record": record_serializer.data,
-      "habit_progress": habit_progress_serializer.data,
-      "global_progress": global_progress_serializer.data,
-      "current_streak": habit.current_streak(),
-    }, status=status.HTTP_200_OK)
-
-  @action(detail=True, methods=["post"], url_path="update-progress")
-  def update_progress(self, request, pk=None):
-    habit = self.get_object()
-    user = request.user
-    today = timezone.localdate()
-    direction = request.data.get("direction") # "increment" o "decrement"
-
-    if direction not in ("increment", "decrement"):
-      return Response(
-        {"detail": "direction debe ser 'increment' or 'decrement'."},
-        status=status.HTTP_400_BAD_REQUEST,
-      )
-
-    record = HabitRecord.objects.filter(
-      habit=habit, user=user, date__date=today
-    ).first()
-
-    if not record:
-      record = HabitRecord.objects.create(
-        habit=habit,
-        user=user,
-        date=timezone.make_aware(datetime.combine(today, time(0, 0))),
-        completed=False,
-        progress=0,
-      )
-
-    was_completed = record.completed
-    target = habit.target_per_period or 1
-
-    if direction == "increment":
-      record.progress = min(record.progress + 1, target)
-    else:
-      record.progress = max(record.progress - 1, 0)
-
-    record.completed = record.progress >= target
-
-    global_progress, _ = Progress.objects.get_or_create(user=user, habit=None)
-    habit_progress, _ = Progress.objects.get_or_create(user=user, habit=habit)    
-
-    if record.completed and not was_completed:
-      record.completed_at = timezone.now()
-      global_progress.add_experience(20)
-      habit_progress.add_experience(25)
-    elif not record.completed and was_completed:
-      record.completed_at = None
-      global_progress.remove_experience(20)
-      habit_progress.remove_experience(25)
-
-    record.save()
-
+  # ---------- Apoyo para las acciones de completado ----------
+  def _completion_response(self, habit, record, result, today):
+    """
+    Respuesta común de toggle-completion y update-progress.
+    Se RELEEN los Progress de la BD: el bonus los modifica con otras instancias,
+    así que los que tenía la vista quedaron desactualizados.
+    """
+    user = self.request.user
+    global_progress = (
+      Progress.objects.filter(user=user, habit=None).first() or Progress(user=user, habit=None)
+    )
+    habit_progress = (
+      Progress.objects.filter(user=user, habit=habit).first() or Progress(user=user, habit=habit)
+    )
     return Response({
       "record": HabitRecordSerializer(record).data,
       "habit_progress": ProgressSerializer(habit_progress).data,
       "global_progress": ProgressSerializer(global_progress).data,
-      "current_streak": habit.current_streak(),
+      "current_streak": services.get_streak(habit, today).times,
+      "xp": {"habit": result.xp_habit, "global": result.xp_global},
+      "bonus": {
+        "action": result.bonus.action,
+        "xp_habit": result.bonus.xp_habit,
+        "xp_global": result.bonus.xp_global,
+      },
     }, status=status.HTTP_200_OK)
+
+  @action(detail=True, methods=["post"], url_path="toggle-completion")
+  def toggle_completion(self, request, pk=None):
+    habit = self.get_object()
+    today = timezone.localdate()
+
+    # No confiar en el tipo que manda el cliente: bool("false") es True en Python
+    completed = request.data.get("completed", None)
+    if completed is not None and not isinstance(completed, bool):
+      return Response(
+        {"detail": "completed debe ser true o false."},
+        status=status.HTTP_400_BAD_REQUEST,
+      )
+    note = request.data.get("note", None)  # solo se modifica si el cliente la envía
+
+    with transaction.atomic():
+      record = services.get_or_create_today_record(habit, request.user, today)
+      if note is not None:
+        record.note = note
+
+      wanted = record.completed if completed is None else completed
+      if wanted != record.completed:
+        # El contador de repeticiones y el estado "completado" no pueden contradecirse
+        if wanted:
+          record.progress = (habit.target_per_period or 1) if habit.frequency == "daily" else 1
+        else:
+          record.progress = 0
+
+      # Toda la lógica de XP vive en el servicio: la vista no decide nada
+      result = services.set_day_completed(habit, record, wanted, today)
+      if not result.changed:
+        record.save()  # el estado no cambió, pero la nota sí pudo cambiar
+
+    return self._completion_response(habit, record, result, today)
+
+  @action(detail=True, methods=["post"], url_path="update-progress")
+  def update_progress(self, request, pk=None):
+    habit = self.get_object()
+    today = timezone.localdate()
+
+    # Este endpoint cuenta repeticiones DENTRO de un día. En semanales y mensuales la
+    # meta son días, y se completan día a día con toggle-completion.
+    if habit.frequency != "daily":
+      return Response(
+        {"detail": "Los hábitos semanales y mensuales se completan con toggle-completion."},
+        status=status.HTTP_400_BAD_REQUEST,
+      )
+
+    direction = request.data.get("direction") # "increment" o "decrement"
+    if direction not in ("increment", "decrement"):
+      return Response(
+        {"detail": "direction debe ser 'increment' o 'decrement'."},
+        status=status.HTTP_400_BAD_REQUEST,
+      )
+
+    target = habit.target_per_period or 1
+
+    with transaction.atomic():
+      record = services.get_or_create_today_record(habit, request.user, today)
+
+      if direction == "increment":
+        record.progress = min(record.progress + 1, target)
+      else:
+        record.progress = max(record.progress - 1, 0)
+
+      result = services.set_day_completed(habit, record, record.progress >= target, today)
+      if not result.changed:
+        # set_day_completed solo guarda si cambia el estado; el contador hay que guardarlo igual
+        record.save(update_fields=["progress"])
+
+    return self._completion_response(habit, record, result, today)
 
   @action(detail=False, methods=["get"], url_path="today")
   def today(self, request):
     """
-    Devuelve los hábitos del usuario con su registro diario
-    Si no existe, lo crea una sola vez por día
+    Estado del día de cada hábito. Es SOLO LECTURA: ausencia de registro = no completado.
+    Hace un número FIJO de consultas (no crece con los hábitos): hábitos con su categoría,
+    días completados, registros de hoy, progresos y bonus del periodo.
     """
+    user = request.user
     today = timezone.localdate()
-    habits = Habit.objects.filter(user=request.user)
 
-    for habit in habits:
-      # Garantiza que solo exista un registro por hábito y fecha
-      HabitRecord.objects.get_or_create(
-        habit=habit,
-        user=request.user,
-        date__date=today,  # compara solo la parte de la fecha
-        defaults={
-          "date": timezone.make_aware(datetime.combine(today, time(0, 0))),
-          "completed": False,
-          "progress": 0,
-        },
+    habits = list(Habit.objects.filter(user=user).select_related("category"))
+    if not habits:
+      return Response([])
+
+    days_by_habit = services.get_completed_days_by_habit(user)
+
+    todays_records = {}
+    for record in HabitRecord.objects.filter(habit__user=user, date__date=today).order_by("pk"):
+      todays_records.setdefault(record.habit_id, record)
+
+    progress_by_habit = {
+      p.habit_id: p for p in Progress.objects.filter(user=user, habit__isnull=False)
+    }
+
+    # Los bonus del periodo en curso: una semana o un mes empiezan a lo sumo 31 días atrás
+    bonuses = {
+      (b.habit_id, b.frequency, b.period_start): b
+      for b in PeriodBonus.objects.filter(
+        habit__user=user, period_start__gte=today - timedelta(days=31)
       )
+    }
 
-    # Prepara la respuesta
+    yesterday = today - timedelta(days=1)
     data = []
     for habit in habits:
-      record = HabitRecord.objects.filter(
-        habit=habit, user=request.user, date__date=today
-      ).first()
+      days = days_by_habit.get(habit.id, set())
+      period = services.period_status(days, habit.frequency, habit.target_per_period, today)
+      record = todays_records.get(habit.id)
+      progress = progress_by_habit.get(habit.id)
+      bonus = bonuses.get((habit.id, habit.frequency, period.period_start))
 
-      yesterday = today - timedelta(days=1)
-      yesterday_record = HabitRecord.objects.filter(
-        habit=habit, user=request.user, date__date=yesterday
-      ).first()
-
-      # Buscamos el progreso del hábito
-      progress = Progress.objects.filter(user=request.user, habit=habit).first()
-      progress_data = ProgressSerializer(progress).data if progress else None
-
-      # Payload
       data.append({
         "id": habit.id,
         "name": habit.name,
         "description": habit.description,
-        "completed_today": record.completed if record else False,
-        "yesterday_completed": yesterday_record.completed if yesterday_record else False,
-        "current_streak": habit.current_streak(),
+        "frequency": habit.frequency,
+        "completed_today": today in days,
+        "yesterday_completed": yesterday in days,
+        "current_streak": period.streak_times,
         "target_per_period": habit.target_per_period,
         "current_progress": record.progress if record else 0,
-        "week_history": habit.week_history(),
+        "week_history": services.week_history_flags(days, today),
         "category": {
           "id": habit.category.id if habit.category else None,
           "name": habit.category.name if habit.category else None,
           "color": habit.category.color if habit.category else None,
         },
-        "progress": progress_data
+        "progress": ProgressSerializer(progress).data if progress else None,
+        # Estado del periodo, calculado en el backend (el frontend solo lo pinta)
+        "period": {
+          "start": period.period_start.isoformat(),
+          "end": period.period_end.isoformat(),
+        },
+        "period_target": period.period_target,
+        "days_done": period.days_done,
+        "period_met": period.period_met,
+        "streak_times": period.streak_times,
+        "streak_periods": period.streak_periods,
+        "at_risk": period.at_risk,
+        "bonus_earned": (
+          {"xp_habit": bonus.xp_habit, "xp_global": bonus.xp_global} if bonus else None
+        ),
       })
 
     return Response(data)
-
-#--------------------------------------------------------
-# ⏱️ Registros de hábitos
-#--------------------------------------------------------
-class HabitRecordViewSet(viewsets.ModelViewSet):
-  """CRUD de registros de hábitos."""
-  serializer_class = HabitRecordSerializer
-  permission_classes = [permissions.IsAuthenticated]
-
-  # Solo registros que el hábito del usuario autenticado
-  def get_queryset(self):
-    return HabitRecord.objects.filter(habit__user=self.request.user)
-
-  # Verifica que el hábito pertenezca al usuario autenticado
-  def perform_create(self, serializer):
-    habit = serializer.validated_data.get("habit")
-
-    # Previene que un usuario cree records en hábitos de otro user
-    if habit.user != self.request.user:
-      raise PermissionDenied("No puede registrar hábitos de otro usuario.")
-
-    serializer.save(user=self.request.user)
 
 #--------------------------------------------------------
 # 👤 Registro de usuarios
