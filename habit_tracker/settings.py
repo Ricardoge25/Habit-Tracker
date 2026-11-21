@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 from decouple import config
 
+from habit_tracker.env import parse_csv_list
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -27,7 +29,9 @@ SECRET_KEY = config("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", default=True, cast=bool)
 
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="").split(",")
+# Hosts exactos separados por comas (p. ej. "mi-api.onrender.com").
+# parse_csv_list evita el [''] que daba "".split(",").
+ALLOWED_HOSTS = parse_csv_list(config("ALLOWED_HOSTS", default=""))
 
 
 # Application definition
@@ -169,8 +173,11 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
-# Configuración CORS (para que React pueda consumir la API)
-CORS_ALLOW_ALL_ORIGINS = True  # en producción se deben poner solo los dominios permitidos
+# CORS: solo estos orígenes pueden LEER las respuestas de la API desde un navegador.
+# Cada entorno define su lista (producción: solo Netlify; desarrollo: localhost).
+# Formato: esquema + host (+ puerto), separados por comas y SIN barra final.
+# Un origen mal escrito (con "/" o ruta) hace fallar `manage.py check` (corsheaders.E014).
+CORS_ALLOWED_ORIGINS = parse_csv_list(config("CORS_ALLOWED_ORIGINS", default=""))
 
 LOGGING = {
     'version': 1,
