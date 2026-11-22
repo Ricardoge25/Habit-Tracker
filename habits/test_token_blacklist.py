@@ -1,17 +1,16 @@
 """
-Test del logout con blacklist del refresh token (POST /api/token/blacklist).
+Tests del logout con blacklist del refresh token (POST /api/token/blacklist/).
 
 Qué protege: tras el logout, el refresh token deja de servir para obtener
-nuevos access token. Qué NO protege (limitación documentada en un test):
-el access token ya emitido sigue siendo válido hasta que caduque, porque 
+nuevos access tokens. Qué NO protege (limitación documentada en un test):
+el access token ya emitido sigue siendo válido hasta que caduque, porque
 el servidor no consulta ninguna tabla para validarlo (JWT sin estado).
 """
-
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.tokens import RefreshToken 
+from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
 
@@ -26,9 +25,16 @@ PASSWORD = "Sup3r-Segura-123"
 class TokenBlacklistTests(TestCase):
   def setUp(self):
     # Los endpoints de tokens son anónimos y tienen throttle de 10/min.
-    # El historial del throttle vive en la caché y se comparte entre tests:
-    # sin limpiarla, los tests empezarían a recibir 429 según el orden.
+    # El historial del throttle vive en la CACHÉ, que (a diferencia de la BD)
+    # NO se revierte entre tests: es estado compartido por toda la suite.
+    #  - cache.clear() al empezar: no heredamos peticiones de tests anteriores.
+    #  - addCleanup(cache.clear) al terminar (pase o falle): no dejamos
+    #    peticiones que provoquen 429 en los tests que corran después.
+    # Sin la limpieza final, RegisterEndpointTests fallaba con 429 en CI
+    # (suite rápida, todo dentro de la misma ventana de 60 s) y pasaba en
+    # local (suite lenta, el historial caducaba): un test inestable.
     cache.clear()
+    self.addCleanup(cache.clear)
     self.client = APIClient()
     self.user = User.objects.create_user(username="ana", password=PASSWORD)
 
@@ -106,7 +112,7 @@ class TokenBlacklistTests(TestCase):
   def test_access_token_still_works_after_logout_known_limitation(self):
     # LIMITACIÓN CONOCIDA: el access vive hasta su expiración (30 min).
     # Si algún día este test falla, es que cambió el modelo de sesión:
-    # actualiza el CONTEXT.md
+    # actualiza el CONTEXT.md.
     access, refresh = self.login()
     self.blacklist(refresh)
 
