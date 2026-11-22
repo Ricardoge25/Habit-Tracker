@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "habits",
 ]
@@ -167,6 +168,9 @@ AUTH_USER_MODEL = 'habits.CustomUser'
 
 from datetime import timedelta
 
+# Sin ROTATE_REFRESH_TOKENS a propósito: con varias pestañas abiertas, dos
+# renovaciones simultáneas con el mismo refresh harían que una pestaña cerrara
+# sesión. Ver pendiente en docs/CONTEXT.md antes de activarlo.
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
