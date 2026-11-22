@@ -16,11 +16,20 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from rest_framework_simplejwt.views import (TokenObtainPairView, TokenRefreshView)
+from rest_framework_simplejwt.views import (
+    TokenBlacklistView,
+    TokenObtainPairView,
+    TokenRefreshView,
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include("habits.urls")),
     path("api/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    # Logout: recibe {"refresh": "..."} y lo revoca. Público a propósito
+    # (AllowAny): poseer el refresh es la prueba, y así funciona aunque el
+    # access ya haya caducado. Va bajo token/ para que el interceptor de
+    # axios no intente renovar la sesión si responde 401.
+    path("api/token/blacklist/", TokenBlacklistView.as_view(), name="token_blacklist"),
 ]
