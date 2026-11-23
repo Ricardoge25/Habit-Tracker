@@ -4,7 +4,7 @@
 > Sirve para (1) pasárselo a una conversación nueva con Claude y (2) recordar decisiones dentro de meses.
 > **No incluir secretos** (contraseñas, claves, cadenas de conexión). Los valores de Docker local son solo de desarrollo.
 
-- **Última actualización:** release `v0.3.0` en producción
+- **Última actualización:** release `v0.3.1` en producción
 - **Autor:** Ricardo González
 - **Cómo mantenerlo:** actualizarlo en el mismo PR que cierra un pendiente o toma una decisión. Al cerrar un pendiente, se borra de la sección "Pendientes". Si un pendiente afecta a ambos repos, aparece en ambas listas y se borra de las dos al terminar.
 
@@ -18,6 +18,7 @@ Aplicación full stack de seguimiento de hábitos con gamificación: XP, niveles
 
 - **Modo mentor.** Explicar el *porqué* de cada decisión (también las de reglas de negocio), señalar el problema y guiar a encontrar la solución, sin regalar todo hecho. Si el usuario se atasca, dar pistas concretas.
 - **Cuando se pidan cambios en un archivo, entregar el archivo completo.**
+- **Indentación de 2 espacios** en el código nuevo (Python y JS). Dentro de un mismo archivo nunca se mezclan indentaciones (Python falla con `IndentationError`); al editar un archivo antiguo de 4 espacios, respetar el que ya tiene.
 - **Tests primero:** escribir el test, ver el rojo, arreglar, ver el verde.
 - **Al cerrar una rama o un release, entregar el título y la descripción del PR** (qué hace, cambios, decisiones, cómo probarlo, validación), también para los PR `develop → main`.
 - **No asumir, verificar.** Si hay un 500, leer el traceback antes de proponer causas.
@@ -34,7 +35,7 @@ React + Vite (Netlify)  ──REST/JWT──▶  Django REST Framework (Render) 
 | Pieza | Tecnología | Dónde corre |
 |---|---|---|
 | Frontend | React 19, Vite 7, Tailwind CSS v4, React Router 7, Axios, react-hot-toast, lucide-react, Vitest | Netlify |
-| Backend | Python 3.11, Django 5.2, Django REST Framework, SimpleJWT, WhiteNoise, gunicorn | Render (Docker, `Dockerfile.prod`) |
+| Backend | Python 3.11, Django 5.2, Django REST Framework, SimpleJWT (5.5.1, con `token_blacklist`), django-cors-headers, WhiteNoise, gunicorn | Render (Docker, `Dockerfile.prod`) |
 | Base de datos | PostgreSQL | Supabase (proyectos separados: `habit-tracker` producción y `habit-tracker-dev` desarrollo); Postgres 15 en Docker (tests) |
 | CI | GitHub Actions | GitHub |
 | Contenedores | Docker Compose (backend, frontend, db) | Local |
@@ -47,8 +48,9 @@ React + Vite (Netlify)  ──REST/JWT──▶  Django REST Framework (Render) 
 
 **Despliegue:**
 
-- Render: **Auto-Deploy "On Commit"** desde `main`. El campo *Pre-Deploy Command* está vacío y bloqueado (plan gratuito). **Render NO ejecuta `migrate` solo**: las migraciones se aplican a mano en Supabase **antes** de mergear a `main` (ver "Pendientes").
-- Netlify: despliega desde `main`. Tiene `public/_redirects` con `/* /index.html 200` para que React Router funcione al recargar. Variable `VITE_API_URL` apunta al backend de Render. **`VITE_IDLE_TIMEOUT_MS` NO debe estar definida en Netlify.**
+- Render: **Auto-Deploy "On Commit"** desde `main`. El campo *Pre-Deploy Command* está vacío y bloqueado (plan gratuito). **Render NO ejecuta `migrate` solo**: las migraciones se aplican a mano en Supabase **antes** de mergear a `main` (ver sección 3).
+- Render, variables de seguridad (sin secretos aquí): `ALLOWED_HOSTS` = el host **exacto** del servicio (`habit-tracker-backend-bj1c.onrender.com`; nunca `.onrender.com`, que acepta cualquier app de la plataforma) y `CORS_ALLOWED_ORIGINS=https://my-habitflow-app.netlify.app` (sin `/` final; un origen mal escrito hace fallar `manage.py check` con `corsheaders.E014`). Producción **no** incluye `localhost`.
+- Netlify: despliega desde `main`. Tiene `public/_redirects` con `/* /index.html 200` para que React Router funcione al recargar. Variable `VITE_API_URL` apunta al backend de Render. **`VITE_IDLE_TIMEOUT_MS` NO debe estar definida en Netlify.** No se usan *deploy previews*: usarían el backend de producción con código sin mergear y obligarían a ampliar CORS.
 - El backend de desarrollo (Docker local) se conecta al proyecto `habit-tracker-dev` de Supabase.
 - Rollback: Netlify → Deploys → publicar el anterior. Render → Events → redeploy del commit anterior (las migraciones aditivas no estorban al código viejo).
 
@@ -56,13 +58,14 @@ React + Vite (Netlify)  ──REST/JWT──▶  Django REST Framework (Render) 
 
 ## 3. Flujo de trabajo con Git
 
-- **Ramas:** `main` = producción; `develop` = integración. Ramas de trabajo cortas con un solo propósito (`fix/...`, `feat/...`, `ci/...`, `chore/...`).
+- **Ramas:** `main` = producción; `develop` = integración. Ramas de trabajo cortas con un solo propósito (`fix/...`, `feat/...`, `ci/...`, `chore/...`). El nombre de la rama se revisa antes del primer push (queda para siempre en el merge commit).
 - **Ciclo:** rama → PR a `develop` (**Merge commit**) → validar → PR `develop → main` (**Merge commit, nunca squash**) → back-merge `main → develop` → tag.
 - **Por qué merge commit entre `develop` y `main`:** con squash las ramas divergen y aparecen conflictos fantasma.
-- **Commits:** *Conventional Commits* (`tipo(alcance): descripción`), atómicos y con `git add` explícito (nunca `git add .`, para no colar `.env`).
-- **Orden de despliegue:** si el release toca ambos repos, **primero backend** (migración manual → merge → Render `Live` → smoke test) y **luego frontend**.
-- **Release actual:** `v0.3.0` (mismo tag en ambos repos).
-- **Migraciones a producción (a mano, antes del merge a `main`):** (1) comprobar con SQL de solo lectura que los datos no violan las restricciones nuevas; (2) copia de seguridad si el plan la permite; (3) desde la consola, con `.env.supabase` (**producción**; `.env` es desarrollo; ninguno se versiona): comprobar que el `ref` del `POSTGRES_USER` coincide con el *Reference ID* de `habit-tracker`, ejecutar `showmigrations habits` y `migrate --plan`, y solo entonces `migrate habits`; (4) verificar el resultado con SQL. El comando carga el archivo con `python-decouple` (en cmd de Windows, comillas dobles): `docker compose exec backend python -c "import os,sys; from decouple import RepositoryEnv; os.environ.update(RepositoryEnv('.env.supabase').data); os.environ.setdefault('DJANGO_SETTINGS_MODULE','habit_tracker.settings'); from django.core.management import execute_from_command_line as run; run(['manage.py']+sys.argv[1:])" <comando de Django>`. Se usa el puerto 5432 (session pooler).
+- **Commits:** *Conventional Commits* (`tipo(alcance): descripción`), atómicos y con `git add` explícito (nunca `git add .`, para no colar `.env`). El test y su arreglo van en el mismo commit (ningún commit deja el CI en rojo).
+- **Orden de despliegue:** si el release toca ambos repos, **primero backend** (variables de Render → migración manual → merge → Render `Live` → smoke test) y **luego frontend**. El tag se pone en los dos repos cuando ambos están en producción.
+- **Release actual:** `v0.3.1` (mismo tag en ambos repos).
+- **Migraciones a producción (a mano, antes del merge a `main`):** (1) comprobar con SQL de solo lectura que los datos no violan las restricciones nuevas (o, para tablas nuevas, que aún no existen con `to_regclass`); (2) copia de seguridad si el plan la permite, o un plan de vuelta atrás probado (`migrate <app> <migración anterior>` o `zero` si la app es nueva); (3) desde la consola, con `.env.supabase` (**producción**; `.env` es desarrollo; ninguno se versiona): comprobar que el `ref` del `POSTGRES_USER` coincide con el *Reference ID* de `habit-tracker`, ejecutar `showmigrations <app>` y `migrate <app> --plan`, y solo entonces `migrate <app>` (`<app>` = `habits`, `token_blacklist`...; migrar app por app, nunca `migrate` a secas); (4) verificar el resultado con SQL. El comando carga el archivo con `python-decouple` (en cmd de Windows, comillas dobles): `docker compose exec backend python -c "import os,sys; from decouple import RepositoryEnv; os.environ.update(RepositoryEnv('.env.supabase').data); os.environ.setdefault('DJANGO_SETTINGS_MODULE','habit_tracker.settings'); from django.core.management import execute_from_command_line as run; run(['manage.py']+sys.argv[1:])" <comando de Django>`. Se usa el puerto 5432 (session pooler).
+- **Migraciones de librerías** (p. ej. `token_blacklist`): viven en el paquete, no en el repo, así que `makemigrations --check` no las detecta. Por eso la versión de la librería se fija exacta en `requirements.txt`.
 - **Protección de ramas:** exigir PR y que pasen los checks (`test` en backend, `lint-and-build` en frontend).
 
 ---
@@ -81,11 +84,15 @@ docker compose exec -e POSTGRES_HOST=db -e POSTGRES_PORT=5432 -e POSTGRES_DB=hab
 ```
 
 - **Para migrar la BD que usa el servidor de desarrollo (Supabase dev) se ejecuta `migrate` SIN los `-e`**: con ellos solo se migra la base local y `today` responde 500 (`column ... does not exist`). Antes, confirmar con `docker compose exec backend printenv POSTGRES_USER` que el proyecto es el de desarrollo (nunca imprimir contraseñas).
+- `.env` de desarrollo del backend: además de la BD, `ALLOWED_HOSTS` (incluye `localhost`) y `CORS_ALLOWED_ORIGINS=http://localhost:5173`. Si cambia el `.env`: `docker compose up -d --force-recreate backend`.
+- **Tras `git checkout`, `pull` o `merge` en el backend, reiniciar el contenedor** (`docker compose restart backend`) antes de probar: en Windows el autoreload de Django no siempre detecta los cambios hechos por Git (una ruta nueva respondía 404 con el archivo ya actualizado en disco).
+- Si el contenedor `backend` aparece como `not running`, leer `docker compose logs backend --tail 60`: casi siempre es un error al importar `settings.py` (la causa es la **primera** excepción del traceback).
 - La BD de pruebas se llama `test_habitdb`. Si aparece `test_postgres`, los tests están apuntando a Supabase: parar.
+- La suite completa tarda ~5 min en local (~45 s en CI). Una ejecución que "parece colgada" suele ser lenta: comprobar con `-v 2` qué test corre y con `pg_stat_activity` si hay locks.
 - `python manage.py check` detecta en segundos errores de URLs/vistas (un typo `url=` en `@action` tumbó todo el router).
 - Frontend: `npm run lint`, `npm test` y `npm run build` (en la carpeta del frontend).
 - Logs del backend: `docker compose logs backend --tail 60`.
-- Aviso inofensivo: `The "z" variable is not set` viene de un `$` sin escapar en algún `.env`/compose (pendiente menor de revisar).
+- Avisos inofensivos: `The "z" variable is not set` viene de un `$` sin escapar en algún `.env`/compose; `No directory at: /app/staticfiles/` es WhiteNoise en desarrollo (no se ejecuta `collectstatic`).
 - Si cambia `@theme` o variables `VITE_*`, reiniciar el contenedor del frontend (Vite las lee al arrancar).
 
 ---
@@ -100,6 +107,7 @@ Modelos en `habits/models.py`:
 - **`HabitRecord`**: un registro por hábito y día (`date` es `DateTimeField` a medianoche, por eso se filtra con `date__date`), `completed`, `completed_at`, `progress` (contador cuando la meta > 1 en diarios), `note`, y `xp_habit`/`xp_global` (el XP que dio ese registro; sirve para restar exactamente lo mismo al desmarcar).
 - **`PeriodBonus`**: bonus ganado al cumplir la meta de un periodo (`habit`, `frequency`, `period_start`, `target`, `xp_habit`, `xp_global`). Único por hábito, frecuencia y periodo.
 - **`Progress`**: `user`, `habit` (nullable: `NULL` = progreso **global**), `level`, `experience`. Restricciones únicas **parciales** (migración `0005`): un progreso por (usuario, hábito) y **un solo progreso global por usuario**. Se necesitan porque en SQL `NULL != NULL` y `unique_together` no protege el caso global. `remove_experience` es el inverso exacto de `add_experience` (puede bajar de nivel).
+- **Tablas de `token_blacklist`** (de SimpleJWT, no son modelos propios): `OutstandingToken` (cada refresh emitido, se escribe en cada login) y `BlacklistedToken` (los revocados).
 
 La lógica de reglas vive en `habits/services.py` (funciones puras primero, luego las que usan BD). Migraciones de la funcionalidad: `0006` a `0008`, todas aditivas (la `0008` rellena el XP de los registros antiguos con 25/20).
 
@@ -117,11 +125,12 @@ La lógica de reglas vive en `habits/services.py` (funciones puras primero, lueg
 
 ## 6. Backend: API
 
-Base: `/api/`. Autenticación **JWT** (SimpleJWT): access 30 min, refresh 1 día. Sin credenciales: **401**.
+Base: `/api/`. Autenticación **JWT** (SimpleJWT): access 30 min, refresh 1 día, **sin rotación** (`ROTATE_REFRESH_TOKENS` desactivado a propósito, ver pendientes). Sin credenciales: **401**.
 
 | Endpoint | Métodos | Notas |
 |---|---|---|
-| `/token/`, `/token/refresh/` | POST | Login y renovación |
+| `/token/`, `/token/refresh/` | POST | Login y renovación. Un refresh revocado → **401** |
+| `/token/blacklist/` | POST | **Logout.** `TokenBlacklistView` de SimpleJWT. Cuerpo `{"refresh": "..."}`. Público (`AllowAny`): poseer el refresh es la prueba, y funciona aunque el access haya caducado. 200 revocado; 401 token inválido o ya revocado; 400 sin `refresh`. Va bajo `token/` para que el interceptor de axios no intente renovar si responde 401 |
 | `/register/` | **solo POST** | Público. Valida contraseña en el servidor, normaliza email (`""` → `NULL`, minúsculas, único sin distinguir mayúsculas). No hay list/detalle |
 | `/categories/` | CRUD | Filtrado por usuario. Nombre único por usuario sin distinguir mayúsculas |
 | `/habits/` | CRUD | Filtrado por usuario. Rechaza nombres duplicados y combinaciones de frecuencia y meta inválidas (400), también en PATCH |
@@ -143,14 +152,18 @@ Base: `/api/`. Autenticación **JWT** (SimpleJWT): access 30 min, refresh 1 día
 - Los `GET` no deben escribir en la BD.
 - Los invariantes de datos se protegen en la capa más baja (modelo/BD), no solo en el serializer.
 - No devolver `str(e)` de excepciones internas al cliente.
+- **Logout real:** el refresh se revoca en el servidor (blacklist). **Limitación conocida, documentada con un test:** el access ya emitido sigue válido hasta su expiración (30 min), porque los JWT no tienen estado.
+- **CORS por entorno:** `CORS_ALLOWED_ORIGINS` desde variable de entorno (producción: solo Netlify; desarrollo: `localhost:5173`); `CORS_ALLOW_ALL_ORIGINS` no se usa. CORS **no es un firewall**: un origen ajeno recibe la misma respuesta, solo que sin `Access-Control-Allow-Origin`, y es el navegador quien bloquea la lectura. Los tests comprueban la cabecera, no el código de estado.
+- **`ALLOWED_HOSTS`** con host exacto. Las listas de variables de entorno se leen con `parse_csv_list` (`habit_tracker/env.py`, función pura): `""` → `[]`, sin espacios ni elementos vacíos.
 
 ---
 
 ## 7. Backend: pruebas y CI
 
-- **151 tests en verde**: `habits/tests.py` (registro, progreso, nombres, XP, frecuencia y `PeriodBonus`) y los archivos `test_services.py` (funciones puras), `test_services_db.py`, `test_record_xp.py`, `test_endpoints_xp.py`, `test_period_status.py`, `test_habit_edit_api.py`, `test_today_api.py` y `test_habit_record_api.py`.
+- **170 tests en verde**: `habits/tests.py` (registro, progreso, nombres, XP, frecuencia y `PeriodBonus`) y los archivos `test_services.py` (funciones puras), `test_services_db.py`, `test_record_xp.py`, `test_endpoints_xp.py`, `test_period_status.py`, `test_habit_edit_api.py`, `test_today_api.py`, `test_habit_record_api.py`, `test_env.py` (`parse_csv_list`), `test_cors.py` y `test_token_blacklist.py`.
 - **No hay aún tests de CRUD de categorías ni de `monthly_completion_rate`.**
-- Patrón de test: Arrange–Act–Assert; verificar la respuesta **y** el estado de la BD (`refresh_from_db()`); crear usuarios con `create_user` y el resto con `create`. La lógica pura se prueba con `SimpleTestCase` (sin BD).
+- Patrón de test: Arrange–Act–Assert; verificar la respuesta **y** el estado de la BD (`refresh_from_db()`); crear usuarios con `create_user` y el resto con `create`. La lógica pura se prueba con `SimpleTestCase` (sin BD). En tests de URLs nuevas, usar la URL literal (el rojo es un 404 claro, no un `NoReverseMatch`).
+- **Throttle y caché:** el throttle anónimo (10/min) guarda su historial en la **caché**, que no se revierte entre tests como la BD. Todo test que haga peticiones anónimas a endpoints con throttle debe hacer `cache.clear()` en `setUp` **y** `self.addCleanup(cache.clear)`.
 - **CI** (`.github/workflows/backend-ci.yml`): Ubuntu + Postgres 15 como servicio con healthcheck; pasos `manage.py check` → `makemigrations --check --dry-run` → `manage.py test habits`. Variables falsas de CI (nunca se toca Supabase). Acciones fijadas a versión mayor; `permissions: contents: read`.
 - **Regla:** si cambias un modelo, **incluye la migración en el commit** o el CI falla.
 
@@ -161,6 +174,7 @@ Base: `/api/`. Autenticación **JWT** (SimpleJWT): access 30 min, refresh 1 día
 ```
 src/
 ├── api/axios.js            # Instancia de Axios + interceptores (token y refresh)
+├── api/auth.js             # revokeRefreshToken y endSession (logout con blacklist), con auth.test.js
 ├── context/                # auth-context.js (solo el contexto) y AuthContext.jsx (AuthProvider)
 ├── hooks/                  # useAuth, useIdleSession, useNow
 ├── utils/                  # session.js, apiErrors.js, habitUtils.js (con sus *.test.js)
@@ -187,15 +201,17 @@ src/
 - Las fechas `"YYYY-MM-DD"` se convierten con `parseISODate` (`new Date("YYYY-MM-DD")` interpreta UTC y en Bogotá cae un día antes).
 - Los errores de DRF se muestran con `extractApiError`.
 - `.sort` siempre sobre una copia.
+- Una promesa que se ignora a propósito se marca con `void` (p. ej. `void revokeRefreshToken(refresh)`).
 
 **Sesión y autenticación:**
 
-- Tokens en `localStorage` (`access`, `refresh`, `username`, `lastActivity`). Claves centralizadas en `utils/session.js`.
+- Tokens en `localStorage` (`access`, `refresh`, `username`, `lastActivity`). Claves centralizadas en `utils/session.js` (solo constantes y `localStorage`, sin HTTP).
 - **Cierre por inactividad a los 5 minutos** (`IDLE_TIMEOUT_MS`, sobrescribible con `VITE_IDLE_TIMEOUT_MS`). Aviso "¿Sigues ahí?" 60 s antes (nunca más de la mitad del timeout). Se compara `Date.now()` con `lastActivity` (no un `setTimeout`, que se pausa al suspender el equipo).
-- Sincronización entre pestañas con el evento `storage`; el motivo del cierre (`idle`/`expired`) se muestra en el login.
-- `axios.js`: **un solo refresh compartido** entre peticiones 401 simultáneas; si falla, dispara el evento `auth:session-expired` y el `AuthContext` cierra sesión **sin recargar la página**.
+- Sincronización entre pestañas con el evento `storage`; el motivo del cierre (`idle`/`expired`) se muestra en el login. Las demás pestañas no revocan nada: la que cerró sesión ya lo hizo.
+- `axios.js`: **un solo refresh compartido** entre peticiones 401 simultáneas (dentro de una pestaña); si falla, dispara el evento `auth:session-expired` y el `AuthContext` cierra sesión **sin recargar la página**.
+- **Logout con revocación:** los tres cierres (botón, inactividad y sesión expirada) pasan por `logout` del `AuthContext`, que llama a `endSession()`; el arranque con sesión caducada por inactividad también. `endSession` (1) lee el refresh, (2) lanza `revokeRefreshToken` **sin `await`** y (3) limpia el `localStorage` al instante. `revokeRefreshToken` usa axios "pelado" (no la instancia `api`), timeout de 5 s y **nunca rechaza**. Si la red falla, el cierre no se bloquea y el refresh sigue válido hasta que caduque (máx. 1 día): riesgo aceptado.
 - `SessionGuard` se monta dentro de `ProtectRoute`, solo si hay usuario.
-- El cierre por inactividad es **control de UX, no de seguridad**: el refresh token sigue válido en el servidor (ver pendiente de blacklist).
+- El cierre por inactividad es control de UX; la seguridad la da la revocación del refresh en el servidor (con la limitación del access de 30 min).
 
 **Sistema de diseño (`index.css`):**
 
@@ -208,7 +224,7 @@ src/
 
 **CI** (`.github/workflows/frontend-ci.yml`): `npm ci` → `npm run lint` → `npm test` → `npm run build`, con Node 20 y `VITE_API_URL` falso. Lint en **0 errores y 0 warnings**. `eslint.config.js` usa `varsIgnorePattern` y `argsIgnorePattern` con `^[A-Z_]` porque ESLint base no reconoce el JSX como uso.
 
-**Tests:** Vitest 4 (la versión 5 exige Node ≥ 22; el proyecto usa Node 20), entorno `node`, con la zona horaria fijada en `America/Bogota` (`src/test/global-setup.js`). **54 tests** sobre `habitUtils.js` y `apiErrors.js`: solo funciones puras, no se montan componentes.
+**Tests:** Vitest 4 (la versión 5 exige Node ≥ 22; el proyecto usa Node 20), entorno `node`, con la zona horaria fijada en `America/Bogota` (`src/test/global-setup.js`). **63 tests** sobre `habitUtils.js`, `apiErrors.js` y `api/auth.js`: no se montan componentes. La red se simula con `vi.mock("axios")` y el `localStorage` con `vi.stubGlobal` (deshecho con `vi.unstubAllGlobals()` en `afterEach`). Los mocks prueban la lógica; la integración real se comprueba a mano en DevTools → Network (incluido el modo *Offline*).
 
 ---
 
@@ -222,10 +238,14 @@ src/
 6. **`MultipleObjectsReturned`** es un problema de datos, no de lógica: leer el tipo de excepción antes de hipotetizar.
 7. **Renombrar un `url_path` rompe los `reverse()` de los tests.** Buscar todos los usos antes.
 8. **Hay que probar los caminos felices del frontend** (no solo la seguridad): el cambio de un serializer compartido afectó endpoints que no se tocaron.
-9. **Aplicar migraciones aditivas a producción antes del merge**, porque Render no las ejecuta.
+9. **Aplicar migraciones aditivas a producción antes del merge**, porque Render no las ejecuta. Vale también para apps de librerías (`token_blacklist`): sin sus tablas, el login daría 500.
 10. **Un mismo valor puede significar cosas distintas según la frecuencia** (`target_per_period`): la interfaz decide el control por la frecuencia, no por el número.
 11. **Los `-e` de `docker compose exec` solo valen para ese comando:** un `migrate` con ellos no toca la base que usa el servidor.
 12. **`.env.supabase` no se puede cargar con `sh`/`source`:** un `)` o un `$` en un valor (p. ej. la contraseña) lo rompe. Leerlo como datos con `python-decouple`.
+13. **La caché no se revierte entre tests como la BD.** Los tests de blacklist dejaban peticiones en el throttle y `RegisterEndpointTests` recibía 429 solo en CI: en local la suite tarda ~5 min y la ventana de 60 s caducaba. Si un test pasa en local y falla en CI, sospechar de estado compartido o de dependencia del tiempo.
+14. **El autoreload no siempre ve los cambios de Git en Windows:** tras un `checkout`/`pull`, el servidor siguió con el `urls.py` viejo (404 con el archivo correcto en disco). Reiniciar el contenedor antes de probar.
+15. **Los mocks no prueban la integración:** los tests del frontend comprobaban la lógica de `revokeRefreshToken`, pero solo la prueba manual en Network detectó que el servidor local respondía 404. Toda función que habla con la red se prueba también a mano.
+16. **Las variables de entorno nuevas van a la plataforma antes que el código** (Render): un cambio aislado y verificable que no rompe el código viejo.
 
 ---
 
@@ -236,10 +256,9 @@ src/
 ### 10.1 Backend
 
 **Seguridad y despliegue**
-- 🔗 **Blacklist del refresh token** en el logout (`rest_framework_simplejwt.token_blacklist`): hoy el logout solo borra `localStorage` y el refresh sigue válido hasta 1 día.
+- 🔗 **Rotación del refresh token** (`ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION`): requiere antes coordinar el refresh **entre pestañas** (Web Locks API); si no, dos pestañas renovando a la vez harían que una cerrara sesión. Decidir a la vez si se baja el access de 30 a 10–15 min.
+- **Limpieza de `OutstandingToken`:** crece con cada login. Programar `python manage.py flushexpiredtokens` (cron o tarea programada).
 - 🔗 **`migrate` automático en el despliegue** (PR de DevOps): p. ej. `CMD ["sh","-c","python manage.py migrate --noinput && gunicorn ..."]` en `Dockerfile.prod`, o Pre-Deploy si el plan lo permite.
-- 🔗 **CORS:** `CORS_ALLOW_ALL_ORIGINS = True`; restringir al dominio de Netlify y a localhost.
-- `ALLOWED_HOSTS` con `.split(",")` sobre `""` da `['']`; limpiar.
 - Contenedor de producción corre como **root**; crear usuario sin privilegios.
 - Logging estructurado y monitoreo (Sentry).
 - Límite de hábitos por usuario.
@@ -253,18 +272,20 @@ src/
 - **`HabitRecord.date` como `DateTimeField`** a medianoche obliga a `date__date` y produce el warning de datetime naive. Evaluar `DateField` (y zona horaria por usuario).
 - `ProgressViewSet.list` devuelve 404 con colección vacía; debería ser 200 con `[]`.
 - `habits/apps.py` (`ready()` importa `signals`) y `habits/signals.py` (sobre `User`, no `CustomUser`) son **código muerto**: eliminar.
-- Menores: `STATICFILES_STORAGE` obsoleto (usar `STORAGES`), `AUTH_PASSWORD_VALIDATORS` duplicado, `select_related` → `list_select_related` y typo `select_relate` en el admin, mezcla de `config()` y `os.getenv` para la BD, paginación.
-- **Más tests:** categorías y `monthly_completion_rate`. Organizar los tests en un paquete `habits/tests/`.
+- Menores: `STATICFILES_STORAGE` obsoleto (usar `STORAGES`), `AUTH_PASSWORD_VALIDATORS` duplicado, `select_related` → `list_select_related` y typo `select_relate` en el admin, mezcla de `config()` y `os.getenv` para la BD, paginación, `$` sin escapar (aviso de la variable `z`).
+- **Tests:** aislar la caché del throttle en **toda** la suite (clase base que limpie al empezar y al terminar; `RegisterEndpointTests` hoy depende de que nadie la ensucie antes); medir y acelerar la suite (~5 min en local; evaluar un hasher de contraseñas rápido solo en tests); tests de categorías y `monthly_completion_rate`; organizar los tests en un paquete `habits/tests/`.
+- 🔗 **`.editorconfig`** con 2 espacios (`indent_size = 2`, `end_of_line = lf`) en una rama `chore/editorconfig`.
 
 ### 10.2 Frontend
 
 **Seguridad y despliegue**
-- 🔗 **Blacklist del refresh token:** en el logout, llamar al endpoint del backend antes de limpiar el `localStorage`.
+- 🔗 **Rotación del refresh token:** coordinar el refresh entre pestañas (Web Locks API) antes de activarla en el backend.
 - 🔗 **Cabeceras de seguridad** con `public/_headers` (`X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options` o CSP) y mantener coherencia con el CORS del backend.
 - 🔗 **`migrate` automático:** sin cambios en este repo, pero el orden de despliegue (backend antes que frontend) debe respetarse.
 - Tokens en `localStorage` (riesgo XSS): evaluar cookie `httpOnly` para el refresh token.
 
 **Arquitectura y calidad**
+- **`API_URL` duplicado** en `api/axios.js` y `api/auth.js`: centralizarlo en `src/api/config.js`.
 - **TanStack Query** para los datos del servidor: eliminaría fetches manuales, estados de carga y actualizaciones optimistas hechas a mano.
 - Extraer un hook `useHabits` de `HabitList` (mezcla UI, HTTP y lógica).
 - **Tests de componentes** (Testing Library + `jsdom`): hoy solo se prueban funciones puras.
@@ -272,6 +293,7 @@ src/
 - Subir a Node 22 (y Vitest 5) cuando convenga.
 - Acciones de GitHub Actions: `actions/checkout@v4` y `setup-python@v5` avisan por Node 20 deprecado; revisar las versiones mayores vigentes antes de subir. `ubuntu-latest` migra a Ubuntu 26 en octubre de 2026 (el frontend ya fija `ubuntu-24.04`; unificar en el backend).
 - Revisar que `HabitCard` y `HabitModal` mantengan accesibilidad con teclado en el menú ⋮.
+- 🔗 **`.editorconfig`** con 2 espacios (`indent_size = 2`, `end_of_line = lf`) en una rama `chore/editorconfig`.
 
 ### 10.3 Producto e ideas (ambos repos)
 
@@ -289,5 +311,5 @@ src/
 
 1. Pega este archivo completo al empezar el chat.
 2. Indica **la rama o tarea** (p. ej. `feat/...`) y sube **solo los archivos que se van a tocar** (`models.py`, `views.py`, `HabitCard.jsx`...).
-3. Recuerda el modo de trabajo: mentor, archivos completos, tests primero, mobile first.
+3. Recuerda el modo de trabajo: mentor, archivos completos, 2 espacios, tests primero, mobile first.
 4. Al terminar el trabajo, **actualiza este documento** en el mismo PR (borra los pendientes cerrados, añade decisiones y lecciones) y cópialo idéntico al otro repo.
